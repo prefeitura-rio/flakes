@@ -1,2 +1,3 @@
 # flakes
-Nix flakes utilities
+
+Shared files for Prefeitura do Rio infrastructure projects.

@@ -1,0 +1,18 @@
+{
+  description = "Shared files for Prefeitura do Rio infrastructure";
+
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    utils.url   = "github:numtide/flake-utils";
+  };
+
+  outputs = { nixpkgs, utils, ... }:
+    utils.lib.eachDefaultSystem (system:
+      let pkgs = nixpkgs.legacyPackages.${system};
+      in {
+        packages.just-common =
+          pkgs.writeTextDir "just/common.just"
+            (builtins.readFile ./just/common.just);
+      }
+    );
+}
