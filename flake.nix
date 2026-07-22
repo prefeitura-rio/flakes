@@ -12,9 +12,10 @@
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        packages = import ./packages.nix { inherit pkgs; };
       in
       {
-        packages.just-common = pkgs.writeTextDir "just/common.just" (builtins.readFile ./just/common.just);
+        inherit packages;
       }
     );
 }
