@@ -19,9 +19,9 @@ fmt() {
   # Format Terraform files recursively.
   #
   # Environment:
-  #   TF_DIR - terraform working directory (default: .)
+  #   TF_DIR - tofu working directory (default: .)
   info "Formatting Terraform files..."
-  terraform -chdir="${TF_DIR:-.}" fmt -recursive
+  tofu -chdir="${TF_DIR:-.}" fmt -recursive
   success "Formatting completed"
 }
 
@@ -29,9 +29,9 @@ validate() {
   # Validate Terraform configuration.
   #
   # Environment:
-  #   TF_DIR - terraform working directory (default: .)
+  #   TF_DIR - tofu working directory (default: .)
   info "Validating Terraform configuration..."
-  terraform -chdir="${TF_DIR:-.}" validate
+  tofu -chdir="${TF_DIR:-.}" validate
   success "Validation completed"
 }
 
@@ -51,12 +51,12 @@ init() {
   #
   # Environment:
   #   TF_BACKEND_CONFIG - backend-config argument (e.g. prefix=foo/bar) (optional)
-  #   TF_DIR            - terraform working directory (default: .)
+  #   TF_DIR            - tofu working directory (default: .)
   local args=()
   [[ -n "${TF_BACKEND_CONFIG:-}" ]] && args+=(-backend-config "$TF_BACKEND_CONFIG")
 
   info "Initializing Terraform..."
-  terraform -chdir="${TF_DIR:-.}" init "${args[@]}" -upgrade -reconfigure
+  tofu -chdir="${TF_DIR:-.}" init "${args[@]}" -upgrade -reconfigure
   success "Terraform initialized"
 }
 
@@ -70,7 +70,7 @@ ensure_init() {
   # Environment:
   #   TF_BACKEND_CONFIG   - backend-config argument (optional)
   #   TF_BACKEND_EXPECTED - expected value in tfstate backend config (optional)
-  #   TF_DIR              - terraform working directory (default: .)
+  #   TF_DIR              - tofu working directory (default: .)
   local state="${TF_DIR:-.}/.terraform/terraform.tfstate"
   local expected="${TF_BACKEND_EXPECTED:-${TF_BACKEND_CONFIG#*=}}"
 
@@ -88,53 +88,53 @@ ensure_init() {
 }
 
 plan() {
-  # Run terraform plan and write the result to terraform.tfplan.
-  # Uses sops exec-file when TF_SOPS_FILE is set, plain terraform otherwise.
+  # Run tofu plan and write the result to tofu.tfplan.
+  # Uses sops exec-file when TF_SOPS_FILE is set, plain tofu otherwise.
   #
   # Environment:
   #   TF_SOPS_FILE   - path to SOPS-encrypted tfvars (optional)
   #   TF_VARS_FILE   - path to plain tfvars (optional)
   #   TF_ENVIRONMENT - value for -var=environment=... (optional)
-  #   TF_DIR         - terraform working directory (default: .)
+  #   TF_DIR         - tofu working directory (default: .)
   info "Running Terraform plan..."
 
   if [[ -z "${TF_SOPS_FILE:-}" ]]; then
     local args=()
     [[ -n "${TF_VARS_FILE:-}" ]] && args+=(-var-file "$TF_VARS_FILE")
-    terraform -chdir="${TF_DIR:-.}" plan "${args[@]}" -out terraform.tfplan
+    tofu -chdir="${TF_DIR:-.}" plan "${args[@]}" -out tofu.tfplan
     success "Plan completed"
     return 0
   fi
 
-  local tf_cmd="terraform -chdir='${TF_DIR:-.}' plan -var-file={}"
+  local tf_cmd="tofu -chdir='${TF_DIR:-.}' plan -var-file={}"
   [[ -n "${TF_ENVIRONMENT:-}" ]] && tf_cmd+=" -var=environment=${TF_ENVIRONMENT}"
-  tf_cmd+=" -out terraform.tfplan"
+  tf_cmd+=" -out tofu.tfplan"
   sops exec-file --output-type json --filename tfvars.json "$TF_SOPS_FILE" "$tf_cmd"
   success "Plan completed"
 }
 
 apply() {
-  # Run terraform apply.
-  # Uses sops exec-file when TF_SOPS_FILE is set, plain terraform otherwise.
+  # Run tofu apply.
+  # Uses sops exec-file when TF_SOPS_FILE is set, plain tofu otherwise.
   #
   # Environment:
   #   TF_SOPS_FILE    - path to SOPS-encrypted tfvars (optional)
   #   TF_VARS_FILE    - path to plain tfvars (optional)
   #   TF_ENVIRONMENT  - value for -var=environment=... (optional)
   #   TF_AUTO_APPROVE - set to any non-empty value to pass --auto-approve (optional)
-  #   TF_DIR          - terraform working directory (default: .)
+  #   TF_DIR          - tofu working directory (default: .)
   info "Running Terraform apply..."
 
   if [[ -z "${TF_SOPS_FILE:-}" ]]; then
     local args=()
     [[ -n "${TF_VARS_FILE:-}" ]]    && args+=(-var-file "$TF_VARS_FILE")
     [[ -n "${TF_AUTO_APPROVE:-}" ]] && args+=(--auto-approve)
-    terraform -chdir="${TF_DIR:-.}" apply "${args[@]}"
+    tofu -chdir="${TF_DIR:-.}" apply "${args[@]}"
     success "Apply completed"
     return 0
   fi
 
-  local tf_cmd="terraform -chdir='${TF_DIR:-.}' apply -var-file={}"
+  local tf_cmd="tofu -chdir='${TF_DIR:-.}' apply -var-file={}"
   [[ -n "${TF_ENVIRONMENT:-}" ]]  && tf_cmd+=" -var=environment=${TF_ENVIRONMENT}"
   [[ -n "${TF_AUTO_APPROVE:-}" ]] && tf_cmd+=" --auto-approve"
   sops exec-file --output-type json --filename tfvars.json "$TF_SOPS_FILE" "$tf_cmd"
@@ -142,25 +142,25 @@ apply() {
 }
 
 destroy() {
-  # Run terraform destroy.
-  # Uses sops exec-file when TF_SOPS_FILE is set, plain terraform otherwise.
+  # Run tofu destroy.
+  # Uses sops exec-file when TF_SOPS_FILE is set, plain tofu otherwise.
   #
   # Environment:
   #   TF_SOPS_FILE   - path to SOPS-encrypted tfvars (optional)
   #   TF_VARS_FILE   - path to plain tfvars (optional)
   #   TF_ENVIRONMENT - value for -var=environment=... (optional)
-  #   TF_DIR         - terraform working directory (default: .)
+  #   TF_DIR         - tofu working directory (default: .)
   warning "Running Terraform destroy..."
 
   if [[ -z "${TF_SOPS_FILE:-}" ]]; then
     local args=()
     [[ -n "${TF_VARS_FILE:-}" ]] && args+=(-var-file "$TF_VARS_FILE")
-    terraform -chdir="${TF_DIR:-.}" destroy "${args[@]}"
+    tofu -chdir="${TF_DIR:-.}" destroy "${args[@]}"
     success "Destroy completed"
     return 0
   fi
 
-  local tf_cmd="terraform -chdir='${TF_DIR:-.}' destroy -var-file={}"
+  local tf_cmd="tofu -chdir='${TF_DIR:-.}' destroy -var-file={}"
   [[ -n "${TF_ENVIRONMENT:-}" ]] && tf_cmd+=" -var=environment=${TF_ENVIRONMENT}"
   sops exec-file --output-type json --filename tfvars.json "$TF_SOPS_FILE" "$tf_cmd"
   success "Destroy completed"
@@ -168,7 +168,7 @@ destroy() {
 
 import() {
   # Import an existing resource into Terraform state.
-  # Uses sops exec-file when TF_SOPS_FILE is set, plain terraform otherwise.
+  # Uses sops exec-file when TF_SOPS_FILE is set, plain tofu otherwise.
   #
   # Arguments:
   #   $2 - resource address (e.g. module.foo.google_compute_instance.bar)
@@ -178,7 +178,7 @@ import() {
   #   TF_SOPS_FILE   - path to SOPS-encrypted tfvars (optional)
   #   TF_VARS_FILE   - path to plain tfvars (optional)
   #   TF_ENVIRONMENT - value for -var=environment=... (optional)
-  #   TF_DIR         - terraform working directory (default: .)
+  #   TF_DIR         - tofu working directory (default: .)
   local address="${2:?address required}"
   local id="${3:?id required}"
 
@@ -187,12 +187,12 @@ import() {
   if [[ -z "${TF_SOPS_FILE:-}" ]]; then
     local args=()
     [[ -n "${TF_VARS_FILE:-}" ]] && args+=(-var-file "$TF_VARS_FILE")
-    terraform -chdir="${TF_DIR:-.}" import "${args[@]}" "$address" "$id"
+    tofu -chdir="${TF_DIR:-.}" import "${args[@]}" "$address" "$id"
     success "Import completed"
     return 0
   fi
 
-  local tf_cmd="terraform -chdir='${TF_DIR:-.}' import -var-file={}"
+  local tf_cmd="tofu -chdir='${TF_DIR:-.}' import -var-file={}"
   [[ -n "${TF_ENVIRONMENT:-}" ]] && tf_cmd+=" -var=environment=${TF_ENVIRONMENT}"
   tf_cmd+=" '${address}' '${id}'"
   sops exec-file --output-type json --filename tfvars.json "$TF_SOPS_FILE" "$tf_cmd"
@@ -229,12 +229,12 @@ clean() {
   # Remove local Terraform files and plugin cache.
   #
   # Environment:
-  #   TF_DIR - terraform working directory (default: .)
+  #   TF_DIR - tofu working directory (default: .)
   info "Cleaning local Terraform files..."
-  pkill -f terraform || true
+  pkill -f tofu || true
   rm -rf "${TF_DIR:-.}/.terraform" \
          "${TF_DIR:-.}/terraform.tfstate"* \
-         "${TF_DIR:-.}/terraform.tfplan"
+         "${TF_DIR:-.}/tofu.tfplan"
   rm -rf ~/.terraform.d/plugin-cache
   success "Terraform environment cleaned"
 }
