@@ -199,6 +199,19 @@ import() {
   success "Import completed"
 }
 
+check_tfvars() {
+  # Fail if any staged file matches the given pattern.
+  # Intended as a pre-commit guard against committing unencrypted tfvars.
+  #
+  # Arguments:
+  #   $2 - extended regex pattern matching unencrypted tfvars filenames
+  local pattern="${2:?pattern required}"
+  if git diff --cached --name-only | grep -qE "$pattern"; then
+    error "Plaintext tfvars staged - encrypt with: prefrio edit-tfvars"
+    exit 1
+  fi
+}
+
 edit_tfvars() {
   # Open the SOPS-encrypted tfvars file for editing.
   #
@@ -250,6 +263,7 @@ case "${1:-}" in
   apply)        apply ;;
   destroy)      destroy ;;
   import)       import "$@" ;;
+  check-tfvars) check_tfvars "$@" ;;
   edit-tfvars)  edit_tfvars ;;
   k8s)          k8s "$@" ;;
   clean)        clean ;;
@@ -266,6 +280,7 @@ case "${1:-}" in
     info  "  apply         Run Terraform apply"
     info  "  destroy       Run Terraform destroy"
     info  "  import        Import a resource into Terraform state"
+    info  "  check-tfvars  Fail if unencrypted tfvars are staged"
     info  "  edit-tfvars   Edit SOPS-encrypted tfvars"
     info  "  k8s           Fetch Kubernetes credentials"
     info  "  clean         Remove local Terraform files"
