@@ -37,10 +37,6 @@
           devShells.default = pkgs.mkShell {
             packages = with pkgs; [
               basedpyright
-              ruff
-              nixfmt-rfc-style
-              shellcheck
-              shfmt
               (python3.withPackages (ps: [
                 ps.loguru
                 ps.typer
