@@ -28,6 +28,7 @@
             programs = {
               ruff-format.enable = true;
               ruff-check.enable = true;
+              nixfmt.enable = true;
               shfmt.enable = true;
               shellcheck.enable = true;
             };
@@ -37,6 +38,7 @@
             packages = with pkgs; [
               basedpyright
               ruff
+              nixfmt-rfc-style
               shellcheck
               shfmt
               (python3.withPackages (ps: [
