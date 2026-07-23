@@ -31,13 +31,20 @@
             };
           };
 
-          devShells.k3s = pkgs.mkShell {
-            packages = with pkgs; [
-              basedpyright
-              ruff
-              (python3.withPackages (ps: [ ps.typer ]))
-            ];
-          };
+          devShells =
+            let
+              k3s = pkgs.mkShell {
+                packages = with pkgs; [
+                  basedpyright
+                  ruff
+                  (python3.withPackages (ps: [ ps.typer ]))
+                ];
+              };
+            in
+            {
+              default = k3s;
+              inherit k3s;
+            };
         };
     };
 }
