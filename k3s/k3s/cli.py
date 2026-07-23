@@ -5,10 +5,10 @@ from typing import Annotated
 
 import typer
 
-from .ensure_incus import ensure_incus
-from .ensure_kubeconfig import ensure_kubeconfig
+from .incus import ensure_incus
+from .kubeconfig import ensure_kubeconfig
+from .tailscale import validate_tailscale
 from .terraform import terraform_run
-from .validate_tailscale import validate_tailscale
 
 app = typer.Typer(no_args_is_help=True)
 
