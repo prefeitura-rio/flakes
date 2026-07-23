@@ -73,7 +73,7 @@ def fetch_and_encrypt(cluster_name: str, hostname: str) -> None:
     logger.success(f"Kubeconfig encrypted at {kubeconfig}")
 
 
-def main() -> None:
+def ensure_kubeconfig() -> None:
     """Fetch and encrypt kubeconfig from the cluster."""
     cluster_name = environ.get("CLUSTER_NAME", "")
     hostname = environ.get("K3S_MASTER_HOSTNAME", "k3s-master")
@@ -87,4 +87,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    ensure_kubeconfig()

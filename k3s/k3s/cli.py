@@ -6,7 +6,7 @@ from typing import Annotated
 import typer
 
 from .ensure_incus import ensure_incus
-from .ensure_kubeconfig import main as kubeconfig_main
+from .ensure_kubeconfig import ensure_kubeconfig
 from .terraform import terraform_run
 from .validate_tailscale import validate_tailscale
 
@@ -47,7 +47,7 @@ def incus(
 @app.command(name="ensure-kubeconfig")
 def kubeconfig() -> None:
     """Fetch and encrypt kubeconfig from the cluster."""
-    kubeconfig_main()
+    ensure_kubeconfig()
 
 
 @app.command(name="validate-tailscale")
