@@ -1,13 +1,17 @@
 """Fetch, patch, and encrypt the k3s kubeconfig from the Incus master node."""
 
 from os import environ
-from pathlib import Path
 
 from .lib import die, info, run, run_binary, sops_dir, success
 
 
 def fetch_and_encrypt(cluster_name: str, hostname: str) -> None:
-    """Fetch kubeconfig from the cluster master node, patch it, and encrypt with SOPS."""
+    """Fetch kubeconfig from the cluster master node, patch it, and encrypt with SOPS.
+
+    Args:
+        cluster_name: Incus cluster name prefix used to locate the master node.
+        hostname: Hostname to substitute for 127.0.0.1 in the kubeconfig.
+    """
     d = sops_dir()
     kubeconfig = d / "kubeconfig.sops"
 
