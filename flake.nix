@@ -13,7 +13,7 @@
       system:
       let
         pkgs = import inputs.nixpkgs { inherit system; };
-        treefmtEval = inputs.treefmt-nix.lib.evalConfig pkgs {
+        treefmtEval = inputs.treefmt-nix.lib.evalModule pkgs {
           projectRootFile = "flake.nix";
           programs = {
             ruff-format.enable = true;
