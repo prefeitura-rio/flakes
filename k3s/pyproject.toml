@@ -1,0 +1,43 @@
+[project]
+name = "k3s"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["typer"]
+
+[project.scripts]
+k3s = "k3s.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.basedpyright]
+typeCheckingMode = "recommended"
+pythonVersion = "3.13"
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+  "COM812",
+  "ISC001",
+  "DJ",
+  "PD",
+  "NPY",
+  "AIR",
+  "FAST",
+  "CPY001",
+  "S603",
+  "S607",
+  "FBT001",
+  "FBT002",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
