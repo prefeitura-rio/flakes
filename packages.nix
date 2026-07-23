@@ -1,7 +1,7 @@
 { pkgs }:
 {
-  base-deps = pkgs.buildEnv {
-    name = "base-deps";
+  deps = pkgs.buildEnv {
+    name = "deps";
     paths = with pkgs; [
       jq
       just
@@ -11,6 +11,9 @@
       sops
       opentofu
       tflint
+      (google-cloud-sdk.withExtraComponents (
+        with google-cloud-sdk.components; [ gke-gcloud-auth-plugin ]
+      ))
     ];
   };
 
