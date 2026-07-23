@@ -4,7 +4,6 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    git-hooks.url = "github:cachix/git-hooks.nix";
     treefmt-nix.url = "github:numtide/treefmt-nix";
   };
 
@@ -44,24 +43,5 @@
         }
       );
     in
-    perSystem
-    // {
-      lib.mkPreCommitCheck =
-        {
-          system,
-          src,
-          pkgs,
-          extraHooks ? { },
-        }:
-        inputs.git-hooks.lib.${system}.run {
-          inherit src;
-          hooks = {
-            gitleaks.enable = true;
-            terraform-fmt = {
-              enable = true;
-              package = pkgs.opentofu;
-            };
-          } // extraHooks;
-        };
-    };
+    perSystem;
 }
