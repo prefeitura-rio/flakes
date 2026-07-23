@@ -5,7 +5,9 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Literal
 
-from .lib import die, info, run, run_binary, sops_dir, success, warning
+from loguru import logger
+
+from .utils import die, run, run_binary, sops_dir
 
 Command = Literal["apply", "destroy", "import"]
 
@@ -60,11 +62,11 @@ def terraform_run(command: Command, extra: list[str], tfdir: Path) -> None:
 
         match command:
             case "apply":
-                info("Applying Terraform changes...")
+                logger.info("Applying Terraform changes...")
             case "destroy":
-                warning("Running Terraform destroy...")
+                logger.warning("Running Terraform destroy...")
             case "import":
-                info(f"Importing resource: {' '.join(extra)}")
+                logger.info(f"Importing resource: {' '.join(extra)}")
 
         _ = run(
             ["sops", "exec-file", "--no-fifo", str(kubeconfig_sops), sops_cmd],
@@ -72,10 +74,10 @@ def terraform_run(command: Command, extra: list[str], tfdir: Path) -> None:
         )
 
         if command != "destroy":
-            success(f"{command.capitalize()} completed")
+            logger.success(f"{command.capitalize()} completed")
             return
 
-        success("Destroy completed")
+        logger.success("Destroy completed")
 
     finally:
         if tfvars_path is not None:

@@ -8,7 +8,9 @@ from subprocess import CompletedProcess
 from sys import argv
 from time import time
 
-from .lib import die, info, run, run_binary, sops_dir, success, warning
+from loguru import logger
+
+from .utils import die, run, run_binary, sops_dir
 
 CACHE_TTL_MINUTES = 60
 
@@ -81,7 +83,7 @@ def ssh_run(
 def ensure_incus(*, force: bool = False) -> None:
     """Ensure Incus remote is configured with a valid encrypted token."""
     if not which("incus"):
-        warning("incus not installed — skipping remote configuration")
+        logger.warning("incus not installed — skipping remote configuration")
         return
 
     d = sops_dir()
@@ -99,7 +101,7 @@ def ensure_incus(*, force: bool = False) -> None:
     name = client_name()
 
     incus_token_sops.unlink(missing_ok=True)
-    info(f"Generating Incus token for {name} via {host}...")
+    logger.info(f"Generating Incus token for {name} via {host}...")
 
     _ = ssh_run(user, host, f"incus config trust revoke-token {name}")
 
@@ -145,7 +147,7 @@ def ensure_incus(*, force: bool = False) -> None:
     _ = run(["incus", "remote", "switch", "k3s"])
 
     _ = cache.touch()
-    success("Incus client configured")
+    logger.success("Incus client configured")
 
 
 def main() -> None:

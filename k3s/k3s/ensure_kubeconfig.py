@@ -2,7 +2,9 @@
 
 from os import environ
 
-from .lib import die, info, run, run_binary, sops_dir, success
+from loguru import logger
+
+from .utils import die, run, run_binary, sops_dir
 
 
 def fetch_and_encrypt(cluster_name: str, hostname: str) -> None:
@@ -15,7 +17,7 @@ def fetch_and_encrypt(cluster_name: str, hostname: str) -> None:
     d = sops_dir()
     kubeconfig = d / "kubeconfig.sops"
 
-    info(f"Fetching kubeconfig from {cluster_name}-master...")
+    logger.info(f"Fetching kubeconfig from {cluster_name}-master...")
     d.mkdir(parents=True, exist_ok=True)
 
     pull = run(
@@ -68,7 +70,7 @@ def fetch_and_encrypt(cluster_name: str, hostname: str) -> None:
     if verify.returncode != 0:
         die("Kubeconfig fetched but cluster unreachable")
 
-    success(f"Kubeconfig encrypted at {kubeconfig}")
+    logger.success(f"Kubeconfig encrypted at {kubeconfig}")
 
 
 def main() -> None:

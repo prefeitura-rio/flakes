@@ -3,7 +3,9 @@
 from json import JSONDecodeError, loads
 from typing import TypedDict, cast
 
-from .lib import die, run, success
+from loguru import logger
+
+from .utils import die, run
 
 EXPECTED_DOMAIN = "squirrel-regulus.ts.net"
 
@@ -41,7 +43,7 @@ def validate_tailscale() -> None:
     if EXPECTED_DOMAIN not in dns_name:
         die(f"Not connected to {EXPECTED_DOMAIN} — run: tailscale up")
 
-    success(f"Connected to {EXPECTED_DOMAIN}")
+    logger.success(f"Connected to {EXPECTED_DOMAIN}")
 
 
 def main() -> None:

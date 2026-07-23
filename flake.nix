@@ -35,7 +35,7 @@
             packages = with pkgs; [
               basedpyright
               ruff
-              (python3.withPackages (ps: [ ps.typer ]))
+              (python3.withPackages (ps: [ ps.loguru ps.typer ]))
             ];
           };
         };
