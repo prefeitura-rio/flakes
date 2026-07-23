@@ -31,19 +31,12 @@
             };
           };
 
-          devShells.default = pkgs.mkShell {
-            packages =
-              (with pkgs; [
-                basedpyright
-                ruff
-                (python3.withPackages (ps: [ ps.typer ]))
-                sops
-                opentofu
-                kubectl
-                tailscale
-                openssh
-              ])
-              ++ pkgs.lib.optional pkgs.stdenv.isLinux pkgs.incus;
+          devShells.k3s = pkgs.mkShell {
+            packages = with pkgs; [
+              basedpyright
+              ruff
+              (python3.withPackages (ps: [ ps.typer ]))
+            ];
           };
         };
     };
