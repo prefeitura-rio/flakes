@@ -2,7 +2,7 @@
   description = "Shared files for Prefeitura do Rio infrastructure";
 
   inputs = {
-    nixpkgs.url     = "github:nixos/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
     treefmt-nix.url = "github:numtide/treefmt-nix";
   };
@@ -25,16 +25,25 @@
 
           treefmt.config = {
             projectRootFile = "flake.nix";
-            programs.ruff-format.enable = true;
-            programs.ruff-check.enable  = true;
+            programs = {
+              ruff-format.enable = true;
+              ruff-check.enable = true;
+            };
           };
 
           devShells.default = pkgs.mkShell {
-            packages = with pkgs; [
-              basedpyright
-              ruff
-              python3
-            ];
+            packages =
+              (with pkgs; [
+                basedpyright
+                ruff
+                (python3.withPackages (ps: [ ps.typer ]))
+                sops
+                opentofu
+                kubectl
+                tailscale
+                openssh
+              ])
+              ++ pkgs.lib.optional pkgs.stdenv.isLinux pkgs.incus;
           };
         };
     };
