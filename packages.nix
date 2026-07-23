@@ -1,5 +1,19 @@
 { pkgs }:
 {
+  base-deps = pkgs.buildEnv {
+    name = "base-deps";
+    paths = with pkgs; [
+      jq
+      just
+      kubectl
+      kubernetes-helm
+      prek
+      sops
+      opentofu
+      tflint
+    ];
+  };
+
   prefrio = pkgs.writeShellApplication {
     name = "prefrio";
     text = builtins.readFile ./scripts/prefrio.sh;
