@@ -34,7 +34,7 @@ def validate_tailscale() -> None:
         die(f"Not connected to {EXPECTED_DOMAIN} — run: tailscale up")
 
     try:
-        status = cast(TailscaleStatus, loads(result.stdout))
+        status = cast("TailscaleStatus", loads(result.stdout))
     except JSONDecodeError:
         die(f"Not connected to {EXPECTED_DOMAIN} — run: tailscale up")
 

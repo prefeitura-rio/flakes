@@ -3,14 +3,14 @@
 from pathlib import Path
 from typing import Annotated
 
-import typer
+from typer import Argument, Option, Typer
 
 from .incus import ensure_incus
 from .kubeconfig import ensure_kubeconfig
 from .tailscale import validate_tailscale
 from .terraform import terraform_run
 
-app = typer.Typer(no_args_is_help=True)
+app = Typer(no_args_is_help=True)
 
 
 @app.command()
@@ -27,8 +27,8 @@ def destroy() -> None:
 
 @app.command(name="import")
 def import_resource(
-    address: Annotated[str, typer.Argument(help="Resource address")],
-    resource_id: Annotated[str, typer.Argument(help="Resource ID")],
+    address: Annotated[str, Argument(help="Resource address")],
+    resource_id: Annotated[str, Argument(help="Resource ID")],
 ) -> None:
     """Import a resource into Terraform state."""
     terraform_run("import", [address, resource_id], Path("terraform"))
@@ -36,9 +36,7 @@ def import_resource(
 
 @app.command(name="ensure-incus")
 def incus(
-    force: Annotated[
-        bool, typer.Option("--force", help="Force token rotation")
-    ] = False,
+    force: Annotated[bool, Option("--force", help="Force token rotation")] = False,
 ) -> None:
     """Configure Incus remote."""
     ensure_incus(force=force)

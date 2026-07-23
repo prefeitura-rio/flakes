@@ -1,9 +1,9 @@
 """Shared subprocess and environment utilities for k3s management scripts."""
 
+import subprocess as sp
 import sys
 from os import environ
 from pathlib import Path
-from subprocess import CompletedProcess, run as subprocess_run
 from typing import NoReturn
 
 from loguru import logger
@@ -27,9 +27,9 @@ def run(
     check: bool = True,
     stdin: str | None = None,
     env: dict[str, str] | None = None,
-) -> CompletedProcess[str]:
+) -> sp.CompletedProcess[str]:
     """Run a text-mode command and return the completed process."""
-    return subprocess_run(
+    return sp.run(
         cmd,
         text=True,
         capture_output=capture,
@@ -45,11 +45,6 @@ def run_binary(
     capture: bool = False,
     check: bool = True,
     stdin: bytes | None = None,
-) -> CompletedProcess[bytes]:
+) -> sp.CompletedProcess[bytes]:
     """Run a binary-mode command and return the completed process."""
-    return subprocess_run(
-        cmd,
-        capture_output=capture,
-        check=check,
-        input=stdin,
-    )
+    return sp.run(cmd, capture_output=capture, check=check, input=stdin)

@@ -20,8 +20,10 @@ def decrypt_incus_token() -> str:
         capture=True,
     )
     token = result.stdout.strip().decode()
+
     if not token:
         die("Failed to decrypt Incus token — run: just rotate-incus-token")
+
     return token
 
 
