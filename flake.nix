@@ -28,6 +28,8 @@
             programs = {
               ruff-format.enable = true;
               ruff-check.enable = true;
+              shfmt.enable = true;
+              shellcheck.enable = true;
             };
           };
 
@@ -35,7 +37,12 @@
             packages = with pkgs; [
               basedpyright
               ruff
-              (python3.withPackages (ps: [ ps.loguru ps.typer ]))
+              shellcheck
+              shfmt
+              (python3.withPackages (ps: [
+                ps.loguru
+                ps.typer
+              ]))
             ];
           };
         };
