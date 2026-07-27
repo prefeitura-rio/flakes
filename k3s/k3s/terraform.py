@@ -1,3 +1,5 @@
+"""Run Terraform commands with kubeconfig and secrets injected at runtime."""
+
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Literal
@@ -10,6 +12,7 @@ Command = Literal["apply", "destroy", "import"]
 
 
 def decrypt_tfvars(tfvars_sops: Path) -> str:
+    """Decrypt a SOPS-encrypted tfvars file and return its JSON content."""
     result = run(
         ["sops", "decrypt", "--output-type", "json", str(tfvars_sops)],
         capture=True,
@@ -20,6 +23,7 @@ def decrypt_tfvars(tfvars_sops: Path) -> str:
 
 
 def terraform_run(command: Command, extra: list[str], tfdir: Path) -> None:
+    """Run a Terraform command with kubeconfig and secrets injected at runtime."""
     kubeconfig_sops = sops_dir() / "kubeconfig.sops"
     tfvars_sops = tfdir / "terraform.tfvars.sops.json"
     tfvars_json = decrypt_tfvars(tfvars_sops)

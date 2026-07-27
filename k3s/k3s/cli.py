@@ -1,3 +1,5 @@
+"""K3s infrastructure management CLI."""
+
 from pathlib import Path
 from typing import Annotated
 
@@ -12,11 +14,13 @@ app = Typer(no_args_is_help=True)
 
 @app.command()
 def apply() -> None:
+    """Apply Terraform changes."""
     terraform_run("apply", [], Path("terraform"))
 
 
 @app.command()
 def destroy() -> None:
+    """Destroy Terraform resources."""
     terraform_run("destroy", [], Path("terraform"))
 
 
@@ -25,18 +29,22 @@ def import_resource(
     address: Annotated[str, Argument(help="Resource address")],
     resource_id: Annotated[str, Argument(help="Resource ID")],
 ) -> None:
+    """Import a resource into Terraform state."""
     terraform_run("import", [address, resource_id], Path("terraform"))
 
 
 @app.command(name="ensure-kubeconfig")
 def kubeconfig() -> None:
+    """Fetch and encrypt kubeconfig from the cluster."""
     ensure_kubeconfig()
 
 
 @app.command(name="validate-tailscale")
 def tailscale() -> None:
+    """Validate Tailscale connection."""
     validate_tailscale()
 
 
 def main() -> None:
+    """Run the k3s CLI."""
     app()
