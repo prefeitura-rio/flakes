@@ -1,34 +1,15 @@
-"""Run Terraform commands with kubeconfig and secrets injected at runtime."""
-
-from os import environ
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Literal
 
 from loguru import logger
 
-from .utils import die, run, run_binary, sops_dir
+from .utils import die, run, sops_dir
 
 Command = Literal["apply", "destroy", "import"]
 
 
-def decrypt_incus_token() -> str:
-    """Decrypt the Incus authentication token from its SOPS-encrypted file."""
-    incus_token_sops = sops_dir() / "incus-token.sops"
-    result = run_binary(
-        ["sops", "decrypt", "--output-type", "binary", str(incus_token_sops)],
-        capture=True,
-    )
-    token = result.stdout.strip().decode()
-
-    if not token:
-        die("Failed to decrypt Incus token — run: just rotate-incus-token")
-
-    return token
-
-
 def decrypt_tfvars(tfvars_sops: Path) -> str:
-    """Decrypt a SOPS-encrypted tfvars file and return its JSON content."""
     result = run(
         ["sops", "decrypt", "--output-type", "json", str(tfvars_sops)],
         capture=True,
@@ -39,10 +20,8 @@ def decrypt_tfvars(tfvars_sops: Path) -> str:
 
 
 def terraform_run(command: Command, extra: list[str], tfdir: Path) -> None:
-    """Run a Terraform command with kubeconfig and secrets injected at runtime."""
     kubeconfig_sops = sops_dir() / "kubeconfig.sops"
     tfvars_sops = tfdir / "terraform.tfvars.sops.json"
-    incus_token = decrypt_incus_token()
     tfvars_json = decrypt_tfvars(tfvars_sops)
 
     tfvars_path: Path | None = None
@@ -56,11 +35,8 @@ def terraform_run(command: Command, extra: list[str], tfdir: Path) -> None:
             f"KUBECONFIG={{}} tofu -chdir={tfdir} {command}"
             f" -var-file={tfvars_path}"
             f" -var=kubeconfig_path={{}}"
-            f" -var=incus_token=$TF_INCUS_TOKEN"
             f" {' '.join(extra)}"
         ).strip()
-
-        env = {**environ, "TF_INCUS_TOKEN": incus_token}
 
         match command:
             case "apply":
@@ -70,10 +46,7 @@ def terraform_run(command: Command, extra: list[str], tfdir: Path) -> None:
             case "import":
                 logger.info(f"Importing resource: {' '.join(extra)}")
 
-        _ = run(
-            ["sops", "exec-file", "--no-fifo", str(kubeconfig_sops), sops_cmd],
-            env=env,
-        )
+        _ = run(["sops", "exec-file", "--no-fifo", str(kubeconfig_sops), sops_cmd])
 
         if command != "destroy":
             logger.success(f"{command.capitalize()} completed")

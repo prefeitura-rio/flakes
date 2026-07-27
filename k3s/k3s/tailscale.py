@@ -1,5 +1,3 @@
-"""Validate that Tailscale is connected to squirrel-regulus.ts.net."""
-
 from json import JSONDecodeError, loads
 from typing import TypedDict, cast
 
@@ -11,19 +9,14 @@ EXPECTED_DOMAIN = "squirrel-regulus.ts.net"
 
 
 class TailscaleSelf(TypedDict, total=False):
-    """Subset of the Tailscale status 'Self' object."""
-
     DNSName: str
 
 
 class TailscaleStatus(TypedDict, total=False):
-    """Subset of the Tailscale status JSON response."""
-
     Self: TailscaleSelf
 
 
 def validate_tailscale() -> None:
-    """Validate that Tailscale is connected to the expected tailnet."""
     result = run(
         ["tailscale", "status", "--json"],
         capture=True,
@@ -47,7 +40,6 @@ def validate_tailscale() -> None:
 
 
 def main() -> None:
-    """Run the validate-tailscale command."""
     validate_tailscale()
 
 
