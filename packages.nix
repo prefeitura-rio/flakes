@@ -1,43 +1,55 @@
 { pkgs }:
+let
+  scripts = pkgs.runCommand "prefrio-scripts" { } ''
+    mkdir -p $out
+    cp ${./scripts/prefrio.nu} $out/prefrio.nu
+    cp ${./scripts/k3s.nu} $out/k3s.nu
+    cp ${./scripts/lib.nu} $out/lib.nu
+    cp ${./scripts/tf.nu} $out/tf.nu
+    cp ${./scripts/project.nu} $out/project.nu
+  '';
+  gcloud = (
+    pkgs.google-cloud-sdk.withExtraComponents (with pkgs.google-cloud-sdk.components; [ gke-gcloud-auth-plugin ])
+  );
+in
 {
   deps = pkgs.buildEnv {
     name = "deps";
     paths = with pkgs; [
+      ansible
+      git
       jq
-      just
       kubectl
       kubernetes-helm
+      nu-lint
+      nushell
+      opentofu
       prek
       sops
-      opentofu
+      tailscale
       tflint
-      (google-cloud-sdk.withExtraComponents (
-        with google-cloud-sdk.components; [ gke-gcloud-auth-plugin ]
-      ))
+      gcloud
     ];
   };
 
   prefrio = pkgs.writeShellApplication {
     name = "prefrio";
-    text = builtins.readFile ./scripts/prefrio.sh;
+    text = ''
+      workdir="$PWD"
+      cd ${scripts}
+      PREFRIO_WORKDIR="$workdir" exec ${pkgs.nushell}/bin/nu ${scripts}/prefrio.nu "$@"
+    '';
+
     runtimeInputs = with pkgs; [
-      google-cloud-sdk
+      gcloud
+      git
+      jq
+      kubectl
+      kubernetes-helm
+      nushell
       opentofu
       sops
-      jq
-      git
-    ];
-  };
-
-  k3s = pkgs.python3.pkgs.buildPythonApplication {
-    pname = "k3s";
-    version = "1.0.0";
-    src = ./k3s;
-    pyproject = true;
-    build-system = with pkgs.python3.pkgs; [ hatchling ];
-    propagatedBuildInputs = with pkgs.python3.pkgs; [
-      loguru
-      typer
+      tailscale
     ];
   };
 }

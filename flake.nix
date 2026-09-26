@@ -5,6 +5,10 @@
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     treefmt-nix.url = "github:numtide/treefmt-nix";
+    nutest = {
+      url = "github:vyadh/nutest/v1.2.0";
+      flake = false;
+    };
   };
 
   outputs =
@@ -19,25 +23,20 @@
             ruff-format.enable = true;
             ruff-check.enable = true;
             nixfmt.enable = true;
-            shfmt.enable = true;
-            shellcheck.enable = true;
           };
         };
       in
       {
         packages = import ./packages.nix { inherit pkgs; };
         formatter = treefmtEval.config.build.wrapper;
-        checks.formatting = treefmtEval.config.build.check;
 
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
-            basedpyright
             treefmtEval.config.build.wrapper
-            (python3.withPackages (ps: [
-              ps.loguru
-              ps.typer
-            ]))
+            nu-lint
+            nushell
           ];
+          NU_LIB_DIRS = "${inputs.nutest}";
         };
       }
     );
