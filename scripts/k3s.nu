@@ -107,3 +107,26 @@ export def "main k3s get-kubeconfig" []: nothing -> nothing {
         rm --recursive --force $temp_dir
     }
 }
+
+# Run a command with the decrypted K3s kubeconfig injected as KUBECONFIG.
+export def "main k3s run" [command: string, ...args: string]: nothing -> nothing {
+    let config = load-project-config
+    let kubeconfig = $config.k3s? | default null | get --optional kubeconfig | default null
+    if $kubeconfig == null {
+        fail "No k3s.kubeconfig found in the project file." {
+            command: k3s-run
+            span: (metadata $config).span
+        }
+    }
+    if not (is-file $kubeconfig) {
+        fail $"K3s kubeconfig file not found: ($kubeconfig)." {
+            command: k3s-run
+            span: (metadata $kubeconfig).span
+        }
+    }
+    run-with-sops {kubeconfig: $kubeconfig} {|files|
+        with-env {KUBECONFIG: $files.kubeconfig} {
+            run-command $command ...$args
+        }
+    }
+}

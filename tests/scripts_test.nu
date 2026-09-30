@@ -378,3 +378,16 @@ def prefrio-tf-edit-vars-opens-sops-file []: record -> nothing {
     let sops_file = $args | last
     assert (($sops_file | path basename) == terraform.tfvars.sops.json)
 }
+
+# Verify k3s run decrypts the kubeconfig and runs the command with KUBECONFIG set.
+@test
+def prefrio-k3s-runs-command-with-decrypted-kubeconfig []: record -> nothing {
+    let fixture = $in
+    let result = run-module {fixture: $fixture module: $K3S_SCRIPT command: [k3s run kubectl get nodes] directory: $fixture.directory}
+
+    assert equal $result.exit_code 0 $result.stderr
+    let kubectl = read-text $fixture.kubectl_args | parse-json
+    assert equal $kubectl.args [get nodes]
+    assert ($kubectl.kubeconfig != null)
+    assert (not ($kubectl.kubeconfig | is-empty))
+}
