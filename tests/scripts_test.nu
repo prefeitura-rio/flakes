@@ -6,6 +6,7 @@ use std/testing *
 const ROOT = path self | path dirname | path dirname
 const TF_SCRIPT = $ROOT | path join scripts/tf.nu
 const K3S_SCRIPT = $ROOT | path join scripts/k3s.nu
+const AUTH_SCRIPT = $ROOT | path join scripts/prefrio.nu
 const DECRYPTED_VARIABLES_NAME = "tfvars"
 const DECRYPTED_KUBECONFIG_NAME = "kubeconfig"
 
@@ -56,6 +57,7 @@ def write-fake-tools [bin: path]: nothing -> nothing {
     write-fake-tofu ($bin | path join tofu)
     write-fake-tailscale ($bin | path join tailscale)
     write-fake-kubectl ($bin | path join kubectl)
+    write-fake-gcloud ($bin | path join gcloud)
 }
 
 # Create an isolated project fixture with fake external commands.
@@ -67,6 +69,7 @@ def make-fixture []: nothing -> record {
     let tofu_args = $directory | path join tofu-args.json
     let tailscale_args = $directory | path join tailscale-args.json
     let kubectl_args = $directory | path join kubectl-args.json
+    let gcloud_args = $directory | path join gcloud-args.json
     try {
         mkdir $bin $terraform $kubeconfig
         write-project-fixture {directory: $directory terraform: $terraform kubeconfig: $kubeconfig}
@@ -81,6 +84,7 @@ def make-fixture []: nothing -> record {
         tofu_args: $tofu_args
         tailscale_args: $tailscale_args
         kubectl_args: $kubectl_args
+        gcloud_args: $gcloud_args
         path: ($env.PATH? | default [])
     }
 }
@@ -148,6 +152,17 @@ def --wrapped main [...args: string] {
     make-executable $path
 }
 
+# Write a fake gcloud executable for auth tests.
+def write-fake-gcloud [path: path]: nothing -> nothing {
+    write-file "#!/usr/bin/env -S nu
+def --wrapped main [...args: string] {
+    let calls = if ($env.GCLOUD_ARGS_FILE | path exists) { open --raw $env.GCLOUD_ARGS_FILE | from json } else { [] }
+    $calls | append [$args] | to json | save --force $env.GCLOUD_ARGS_FILE
+}
+" $path
+    make-executable $path
+}
+
 # Make a fixture executable.
 def make-executable [path: path]: nothing -> nothing {
     let result = chmod +x $path | complete
@@ -165,10 +180,33 @@ def run-module [context: record, ...args: string]: nothing -> record {
         TOFU_ARGS_FILE: $context.fixture.tofu_args
         TAILSCALE_ARGS_FILE: $context.fixture.tailscale_args
         KUBECTL_ARGS_FILE: $context.fixture.kubectl_args
+        GCLOUD_ARGS_FILE: $context.fixture.gcloud_args
     } {
         try {
             cd $context.directory
             nu -c $source | complete
+        } catch {|err|
+            {exit_code: 1 stdout: "" stderr: $err.msg}
+        }
+    }
+}
+
+# Run prefrio.nu as a script in an isolated fixture.
+def run-script [context: record, ...args: string]: nothing -> record {
+    let arg_list = $context.command
+    | append $args
+    | str join " "
+    with-env {
+        PATH: ([$context.fixture.bin] | append $context.fixture.path)
+        TOFU_ARGS_FILE: $context.fixture.tofu_args
+        TAILSCALE_ARGS_FILE: $context.fixture.tailscale_args
+        KUBECTL_ARGS_FILE: $context.fixture.kubectl_args
+        GCLOUD_ARGS_FILE: $context.fixture.gcloud_args
+        PREFRIO_WORKDIR: $context.directory
+    } {
+        try {
+            cd ($context.module | path dirname)
+            nu ($context.module) ...($arg_list | split row " ") | complete
         } catch {|err|
             {exit_code: 1 stdout: "" stderr: $err.msg}
         }
@@ -269,4 +307,17 @@ def prefrio-k3s-get-kubeconfig-uses-tailscale-sops-workflow []: record -> nothin
     assert ("get" in $kubectl.args)
     assert ("nodes" in $kubectl.args)
     assert (not ($kubectl.kubeconfig | path exists))
+}
+
+# Verify the auth command runs the full gcloud login sequence.
+@test
+def prefrio-auth-runs-gcloud-login-sequence []: record -> nothing {
+    let fixture = $in
+    let result = run-script {fixture: $fixture module: $AUTH_SCRIPT command: [auth] directory: $fixture.directory}
+
+    assert equal $result.exit_code 0 $result.stderr
+    let calls = read-text $fixture.gcloud_args | from json
+    assert equal $calls.0 [auth login]
+    assert equal $calls.1 [auth application-default login]
+    assert equal $calls.2 [auth application-default set-quota-project rj-iplanrio-dia]
 }
