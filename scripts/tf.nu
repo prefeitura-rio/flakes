@@ -130,3 +130,45 @@ export def "main tf apply" [...extra: string]: nothing -> nothing {
 export def "main tf destroy" [...extra: string]: nothing -> nothing {
     run-terraform-action destroy ...$extra
 }
+
+# Build backend-config arguments from the project config.
+def build-backend-config-args [config: record]: nothing -> list<string> {
+    let backend = $config.tf.backend? | default {}
+    $backend | items {|key value| $"-backend-config=($key)=($value)"}
+}
+
+# Initialize the Terraform backend.
+export def "main tf init" [...extra: string]: nothing -> nothing {
+    let config = load-project-config
+    let dir = $config.tf.dir
+    let args = [
+        $"-chdir=($dir)"
+        init
+        ...(build-backend-config-args $config)
+        -upgrade
+        -reconfigure
+        ...$extra
+    ]
+    run-command tofu ...$args
+    log info "Terraform initialized"
+}
+
+# Edit the SOPS-encrypted Terraform variables file.
+export def "main tf edit-vars" []: nothing -> nothing {
+    let config = load-project-config
+    let sops_file = $config.tf.vars.sops? | default null
+    if $sops_file == null {
+        fail "No SOPS-encrypted variables file found in the project file." {
+            command: edit-vars
+            span: (metadata $config).span
+        }
+    }
+    if not (is-file $sops_file) {
+        fail $"SOPS variables file not found: ($sops_file)." {
+            command: edit-vars
+            span: (metadata $sops_file).span
+        }
+    }
+    run-command sops ...[edit --input-type json --output-type json $sops_file]
+    log info "Variables file edited"
+}

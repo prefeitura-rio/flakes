@@ -44,6 +44,7 @@ def write-project-fixture [paths: record]: nothing -> nothing {
                 vars: terraform.tfvars.sops.json
             }
         }
+        "k8s": {cluster: smoke-cluster, region: us-central1}
         k3s: {kubeconfig: .k3s/kubeconfig.sops.yaml}
     }
     write-file ($project | to nuon) ($paths.directory | path join .project.nuon)
@@ -70,6 +71,7 @@ def make-fixture []: nothing -> record {
     let tailscale_args = $directory | path join tailscale-args.json
     let kubectl_args = $directory | path join kubectl-args.json
     let gcloud_args = $directory | path join gcloud-args.json
+    let sops_args = $directory | path join sops-args.json
     try {
         mkdir $bin $terraform $kubeconfig
         write-project-fixture {directory: $directory terraform: $terraform kubeconfig: $kubeconfig}
@@ -85,6 +87,7 @@ def make-fixture []: nothing -> record {
         tailscale_args: $tailscale_args
         kubectl_args: $kubectl_args
         gcloud_args: $gcloud_args
+        sops_args: $sops_args
         path: ($env.PATH? | default [])
     }
 }
@@ -96,13 +99,17 @@ def write-file [content: string path: path]: nothing -> nothing {
     }
 }
 
-# Write a fake SOPS executable that copies the source to its output.
+# Write a fake SOPS executable that copies the source to its output or records edit args.
 def write-fake-sops [path: path]: nothing -> nothing {
     write-file "#!/usr/bin/env -S nu
 def --wrapped main [...args: string] {
-    let output_index = $args | enumerate | where item == \"--output\" | get index | first
-    let output = $args | get ($output_index + 1)
-    open --raw ($args | last) | save --force $output
+    if $args.0? == edit {
+        $args | to json | save --force $env.SOPS_ARGS_FILE
+    } else {
+        let output_index = $args | enumerate | where item == \"--output\" | get index | first
+        let output = $args | get ($output_index + 1)
+        open --raw ($args | last) | save --force $output
+    }
 }
 " $path
     make-executable $path
@@ -181,6 +188,7 @@ def run-module [context: record, ...args: string]: nothing -> record {
         TAILSCALE_ARGS_FILE: $context.fixture.tailscale_args
         KUBECTL_ARGS_FILE: $context.fixture.kubectl_args
         GCLOUD_ARGS_FILE: $context.fixture.gcloud_args
+        SOPS_ARGS_FILE: $context.fixture.sops_args
     } {
         try {
             cd $context.directory
@@ -202,6 +210,7 @@ def run-script [context: record, ...args: string]: nothing -> record {
         TAILSCALE_ARGS_FILE: $context.fixture.tailscale_args
         KUBECTL_ARGS_FILE: $context.fixture.kubectl_args
         GCLOUD_ARGS_FILE: $context.fixture.gcloud_args
+        SOPS_ARGS_FILE: $context.fixture.sops_args
         PREFRIO_WORKDIR: $context.directory
     } {
         try {
@@ -320,4 +329,52 @@ def prefrio-auth-runs-gcloud-login-sequence []: record -> nothing {
     assert equal $calls.0 [auth login]
     assert equal $calls.1 [auth application-default login]
     assert equal $calls.2 [auth application-default set-quota-project rj-iplanrio-dia]
+}
+
+# Verify k8s fetches GKE credentials using the project config.
+@test
+def prefrio-k8s-fetches-gke-credentials-from-project-config []: record -> nothing {
+    let fixture = $in
+    let result = run-script {fixture: $fixture module: $AUTH_SCRIPT command: [k8s] directory: $fixture.directory}
+
+    assert equal $result.exit_code 0 $result.stderr
+    let calls = read-text $fixture.gcloud_args | from json
+    assert equal $calls.0 [container clusters get-credentials smoke-cluster --region us-central1 --project rj-civitas-dev]
+}
+
+# Verify tf init runs tofu init with upgrade and reconfigure.
+@test
+def prefrio-tf-init-runs-tofu-init []: record -> nothing {
+    let fixture = $in
+    let result = with-env {
+        TF_DIR: ($fixture.directory | path join terraform)
+        TF_BACKEND_CONFIG: "prefix=smoke/staging"
+    } {
+        run-module {fixture: $fixture module: $TF_SCRIPT command: [tf] directory: $fixture.directory} init
+    }
+
+    assert equal $result.exit_code 0 $result.stderr
+    let args = read-text $fixture.tofu_args | parse-json-list
+    let terraform_directory = $fixture.directory | path join terraform
+    assert ($"-chdir=($terraform_directory)" in $args)
+    assert ("init" in $args)
+    assert ("-upgrade" in $args)
+    assert ("-reconfigure" in $args)
+    assert ("-backend-config=prefix=smoke/staging" in $args)
+}
+
+# Verify tf edit-vars opens the SOPS-encrypted variables file.
+@test
+def prefrio-tf-edit-vars-opens-sops-file []: record -> nothing {
+    let fixture = $in
+    let result = run-module {fixture: $fixture module: $TF_SCRIPT command: [tf] directory: $fixture.directory} edit-vars
+
+    assert equal $result.exit_code 0 $result.stderr
+    let args = read-text $fixture.sops_args | parse-json-list
+    assert ("edit" in $args)
+    assert ("--input-type" in $args)
+    assert ("json" in $args)
+    assert ("--output-type" in $args)
+    let sops_file = $args | last
+    assert (($sops_file | path basename) == terraform.tfvars.sops.json)
 }
