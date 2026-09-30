@@ -65,31 +65,38 @@ def build-approval-args [action: string]: nothing -> list<string> {
     }
 }
 
-# Build all Terraform arguments from one execution context.
-def build-terraform-args [context: record]: nothing -> list<string> {
-    let inputs = $context.inputs
+# Build variable arguments. Apply gets none because a saved plan holds its variables.
+def build-input-args [context: record]: nothing -> list<string> {
+    if $context.action == apply { return [] }
     [
-        ...[$"-chdir=($inputs.directory)" $context.action]
-        ...(build-variable-args $context.files $inputs)
-        ...(build-kubeconfig-args $context.files $inputs)
-        ...(if $context.config.environment != null {
-        [$"-var=environment=($context.config.environment)"]
-    } else { [] })
-        ...(match $context.action {
-        plan => {
-            [$"-out=($context.config.tf.plan_file)"]
-        }
-        apply => [$context.config.tf.plan_file]
-        _ => []
-    })
-        ...(build-approval-args $context.action)
-        ...$context.extra
+        ...(build-variable-args $context.files $context.inputs)
+        ...(build-kubeconfig-args $context.files $context.inputs)
+        ...(
+            if $context.config.environment == null { [] } else { [$"-var=environment=($context.config.environment)"] }
+        )
     ]
+}
+
+# Build the saved plan file argument.
+def build-plan-args [context: record]: nothing -> list<string> {
+    let plan_file = $context.config.tf.plan_file
+    match $context.action {
+        plan => [$"-out=($plan_file)"]
+        apply => [$plan_file]
+        _ => []
+    }
 }
 
 # Execute Terraform with an optional KUBECONFIG.
 def run-tofu [context: record]: nothing -> record {
-    let args = build-terraform-args $context
+    let args = [
+        $"-chdir=($context.inputs.directory)"
+        $context.action
+        ...(build-input-args $context)
+        ...(build-plan-args $context)
+        ...(build-approval-args $context.action)
+        ...$context.extra
+    ]
     let kubeconfig = $context.files | get --optional kubeconfig | default $context.inputs.kubeconfig
     with-env (if $kubeconfig == null { {} } else { {KUBECONFIG: $kubeconfig} }) {
         run-command tofu ...$args
@@ -134,7 +141,7 @@ export def "main tf destroy" [...extra: string]: nothing -> nothing {
 # Build backend-config arguments from the project config.
 def build-backend-config-args [config: record]: nothing -> list<string> {
     let backend = $config.tf.backend? | default {}
-    $backend | items {|key value| $"-backend-config=($key)=($value)"}
+    $backend | items {|key value| $"-backend-config=($key)=($value)" }
 }
 
 # Initialize the Terraform backend.
@@ -169,6 +176,13 @@ export def "main tf edit-vars" []: nothing -> nothing {
             span: (metadata $sops_file).span
         }
     }
-    run-command sops ...[edit --input-type json --output-type json $sops_file]
+    run-command sops ...[
+        edit
+        --input-type
+        json
+        --output-type
+        json
+        $sops_file
+    ]
     log info "Variables file edited"
 }

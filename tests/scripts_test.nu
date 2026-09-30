@@ -6,6 +6,7 @@ use std/testing *
 const ROOT = path self | path dirname | path dirname
 const TF_SCRIPT = $ROOT | path join scripts/tf.nu
 const K3S_SCRIPT = $ROOT | path join scripts/k3s.nu
+const LIB_SCRIPT = $ROOT | path join scripts/lib.nu
 const AUTH_SCRIPT = $ROOT | path join scripts/prefrio.nu
 const DECRYPTED_VARIABLES_NAME = "tfvars"
 const DECRYPTED_KUBECONFIG_NAME = "kubeconfig"
@@ -280,6 +281,19 @@ def prefrio-tf-plan-uses-explicit-variables-file []: record -> nothing {
     assert (not ($args | any { "terraform.tfvars.sops.json" in $in }))
 }
 
+# Verify apply uses the saved plan file and passes no variable options.
+@test
+def prefrio-tf-apply-uses-saved-plan-without-variables []: record -> nothing {
+    let fixture = $in
+    let result = run-module {fixture: $fixture module: $TF_SCRIPT command: [tf] directory: $fixture.directory} apply
+
+    assert equal $result.exit_code 0 $result.stderr
+    let args = read-text $fixture.tofu_args | parse-json-list
+    assert ("apply" in $args)
+    assert ("tofu.tfplan" in $args)
+    assert (not ($args | any { $in =~ ^-var }))
+}
+
 # Verify project discovery from a child directory.
 @test
 def prefrio-tf-plan-detects-parent-project []: record -> nothing {
@@ -390,4 +404,26 @@ def prefrio-k3s-runs-command-with-decrypted-kubeconfig []: record -> nothing {
     assert equal $kubectl.args [get nodes]
     assert ($kubectl.kubeconfig != null)
     assert (not ($kubectl.kubeconfig | is-empty))
+}
+
+# Verify run-command shows child output while the child still runs.
+@test
+def run-command-streams-output-while-the-command-runs []: record -> nothing {
+    let source = $"use ($LIB_SCRIPT) [run-command]; run-command sh ...[-c 'echo first; sleep 1; echo second'] | ignore"
+    let stamps = nu -c $source
+    | lines
+    | each {|line| {line: $line at: (date now)} }
+
+    assert equal ($stamps | get line) [first second]
+    assert ((($stamps | last).at - ($stamps | first).at) >= 500ms)
+}
+
+# Verify run-command reports the exit code of a failing command.
+@test
+def run-command-reports-failing-exit-code []: record -> nothing {
+    let source = $"use ($LIB_SCRIPT) [run-command]; run-command sh ...[-c 'exit 3']"
+    let result = nu -c $source | complete
+
+    assert ($result.exit_code != 0)
+    assert ($result.stderr =~ "exit 3")
 }

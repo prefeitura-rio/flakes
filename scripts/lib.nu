@@ -2,11 +2,6 @@
 
 use std/log
 
-# Format a command and its arguments for an error message.
-def format-command [command: string, ...args: string]: nothing -> string {
-    ([$command] | append $args | str join " ")
-}
-
 # Raise a labelled error after logging it.
 export def fail [message: string, context: record<command: string, span: record>]: nothing -> error {
     log error $message
@@ -21,31 +16,29 @@ export def is-file [path: path]: nothing -> bool {
     if not ($path | path exists) { false } else { ($path | path type) == file }
 }
 
-# Run a command. Suppress successful child output with --quiet.
+# Format a failed command message.
+def format-failure [exit_code: int, ...words: string]: nothing -> string {
+    $"Command failed \(exit ($exit_code)\): ($words | str join ' ')"
+}
+
+# Run a command. Show child output live, or capture it with --quiet.
 export def run-command [
-    --quiet # suppress successful child output
+    --quiet # capture child output instead of showing it
     command: string
     ...args: string
 ]: nothing -> record {
-    let result = do { ^$command ...$args } | complete
-    if not $quiet {
-        if $result.stdout != "" {
-            print ($result.stdout | str trim)
+    let span = (metadata $command).span
+    if $quiet {
+        let result = do { ^$command ...$args } | complete
+        if $result.exit_code != 0 {
+            fail (format-failure $result.exit_code $command ...$args) {command: $command span: $span}
         }
-        if $result.stderr != "" and $result.exit_code == 0 {
-            print ($result.stderr | str trim)
-        }
+        return $result
     }
-    if $result.exit_code != 0 {
-        if not $quiet and $result.stderr != "" {
-            log error ($result.stderr | str trim)
-        }
-        fail $"Command failed (exit ($result.exit_code)): (format-command $command ...$args)" {
-            command: $command
-            span: (metadata $command).span
-        }
+    try { ^$command ...$args } catch {
+        fail (format-failure $env.LAST_EXIT_CODE $command ...$args) {command: $command span: $span}
     }
-    $result
+    {stdout: "" stderr: "" exit_code: 0}
 }
 
 # Decrypt named SOPS files, run an action with their plaintext paths, and clean up.
