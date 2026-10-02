@@ -87,7 +87,8 @@ def build-plan-args [context: record]: nothing -> list<string> {
     }
 }
 
-# Execute Terraform with an optional KUBECONFIG.
+# Execute Terraform with an optional kubeconfig.
+# KUBE_CONFIG_PATH gives providers the current decrypted file. A saved plan keeps the old temporary path.
 def run-tofu [context: record]: nothing -> record {
     let args = [
         $"-chdir=($context.inputs.directory)"
@@ -98,7 +99,7 @@ def run-tofu [context: record]: nothing -> record {
         ...$context.extra
     ]
     let kubeconfig = $context.files | get --optional kubeconfig | default $context.inputs.kubeconfig
-    with-env (if $kubeconfig == null { {} } else { {KUBECONFIG: $kubeconfig} }) {
+    with-env (if $kubeconfig == null { {} } else { {KUBECONFIG: $kubeconfig KUBE_CONFIG_PATH: $kubeconfig} }) {
         run-command tofu ...$args
     }
 }

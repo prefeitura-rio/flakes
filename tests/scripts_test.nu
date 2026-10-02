@@ -69,6 +69,7 @@ def make-fixture []: nothing -> record {
     let terraform = $directory | path join terraform
     let kubeconfig = $directory | path join .k3s
     let tofu_args = $directory | path join tofu-args.json
+    let tofu_env = $directory | path join tofu-env.json
     let tailscale_args = $directory | path join tailscale-args.json
     let kubectl_args = $directory | path join kubectl-args.json
     let gcloud_args = $directory | path join gcloud-args.json
@@ -85,6 +86,7 @@ def make-fixture []: nothing -> record {
         directory: $directory
         bin: $bin
         tofu_args: $tofu_args
+        tofu_env: $tofu_env
         tailscale_args: $tailscale_args
         kubectl_args: $kubectl_args
         gcloud_args: $gcloud_args
@@ -116,11 +118,14 @@ def --wrapped main [...args: string] {
     make-executable $path
 }
 
-# Write a fake OpenTofu executable that records its arguments.
+# Write a fake OpenTofu executable that records its arguments and provider kubeconfig.
 def write-fake-tofu [path: path]: nothing -> nothing {
     write-file "#!/usr/bin/env -S nu
 def --wrapped main [...args: string] {
     $args | to json | save --force $env.TOFU_ARGS_FILE
+    let kube_config_path = $env.KUBE_CONFIG_PATH? | default null
+    let kube_config_exists = $kube_config_path != null and ($kube_config_path | path exists)
+    {kube_config_path: $kube_config_path kube_config_exists: $kube_config_exists} | to json | save --force $env.TOFU_ENV_FILE
 }
 " $path
     make-executable $path
@@ -186,6 +191,7 @@ def run-module [context: record, ...args: string]: nothing -> record {
     with-env {
         PATH: ([$context.fixture.bin] | append $context.fixture.path)
         TOFU_ARGS_FILE: $context.fixture.tofu_args
+        TOFU_ENV_FILE: $context.fixture.tofu_env
         TAILSCALE_ARGS_FILE: $context.fixture.tailscale_args
         KUBECTL_ARGS_FILE: $context.fixture.kubectl_args
         GCLOUD_ARGS_FILE: $context.fixture.gcloud_args
@@ -208,6 +214,7 @@ def run-script [context: record, ...args: string]: nothing -> record {
     with-env {
         PATH: ([$context.fixture.bin] | append $context.fixture.path)
         TOFU_ARGS_FILE: $context.fixture.tofu_args
+        TOFU_ENV_FILE: $context.fixture.tofu_env
         TAILSCALE_ARGS_FILE: $context.fixture.tailscale_args
         KUBECTL_ARGS_FILE: $context.fixture.kubectl_args
         GCLOUD_ARGS_FILE: $context.fixture.gcloud_args
@@ -292,6 +299,19 @@ def prefrio-tf-apply-uses-saved-plan-without-variables []: record -> nothing {
     assert ("apply" in $args)
     assert ("tofu.tfplan" in $args)
     assert (not ($args | any { $in =~ ^-var }))
+}
+
+# Verify apply gives providers the current decrypted kubeconfig, not the path saved in the plan.
+@test
+def prefrio-tf-apply-exports-current-kubeconfig-path []: record -> nothing {
+    let fixture = $in
+    let result = run-module {fixture: $fixture module: $TF_SCRIPT command: [tf] directory: $fixture.directory} apply
+
+    assert equal $result.exit_code 0 $result.stderr
+    let tofu_env = read-text $fixture.tofu_env | parse-json
+    assert ($tofu_env.kube_config_path != null) "KUBE_CONFIG_PATH is not set."
+    assert equal ($tofu_env.kube_config_path | path basename) $DECRYPTED_KUBECONFIG_NAME
+    assert $tofu_env.kube_config_exists "KUBE_CONFIG_PATH does not point to a readable file."
 }
 
 # Verify project discovery from a child directory.
