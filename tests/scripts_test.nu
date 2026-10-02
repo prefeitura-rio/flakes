@@ -43,13 +43,22 @@ def write-project-fixture [paths: record]: nothing -> nothing {
             staging: {
                 project: rj-civitas-dev
                 vars: terraform.tfvars.sops.json
+                backend: {prefix: smoke/staging}
+            }
+            prod: {
+                project: rj-civitas-prod
+                vars: terraform.tfvars.prod.sops.json
+                backend: {prefix: smoke/prod}
             }
         }
-        "k8s": {cluster: smoke-cluster, region: us-central1}
+        k8s: {cluster: smoke-cluster, region: us-central1}
         k3s: {kubeconfig: .k3s/kubeconfig.sops.yaml}
     }
     write-file ($project | to nuon) ($paths.directory | path join .project.nuon)
     write-file "{}" ($paths.terraform | path join terraform.tfvars.sops.json)
+    write-file "{}" ($paths.terraform | path join terraform.tfvars.prod.sops.json)
+    write-file "" ($paths.terraform | path join tofu.plan)
+    write-file "" ($paths.terraform | path join tofu.prod.plan)
     write-file "" ($paths.kubeconfig | path join kubeconfig.sops.yaml)
 }
 
@@ -189,7 +198,7 @@ def run-module [context: record, ...args: string]: nothing -> record {
     | str join " "
     let source = $"use ($context.module) *; main ($command)"
     with-env {
-        PATH: ([$context.fixture.bin] | append $context.fixture.path)
+        PATH: ([$context.fixture.bin] | append $context.fixture.path),
         TOFU_ARGS_FILE: $context.fixture.tofu_args
         TOFU_ENV_FILE: $context.fixture.tofu_env
         TAILSCALE_ARGS_FILE: $context.fixture.tailscale_args
@@ -201,7 +210,7 @@ def run-module [context: record, ...args: string]: nothing -> record {
             cd $context.directory
             nu -c $source | complete
         } catch {|err|
-            {exit_code: 1 stdout: "" stderr: $err.msg}
+            {exit_code: 1, stdout: "", stderr: $err.msg}
         }
     }
 }
@@ -212,7 +221,7 @@ def run-script [context: record, ...args: string]: nothing -> record {
     | append $args
     | str join " "
     with-env {
-        PATH: ([$context.fixture.bin] | append $context.fixture.path)
+        PATH: ([$context.fixture.bin] | append $context.fixture.path),
         TOFU_ARGS_FILE: $context.fixture.tofu_args
         TOFU_ENV_FILE: $context.fixture.tofu_env
         TAILSCALE_ARGS_FILE: $context.fixture.tailscale_args
@@ -225,7 +234,7 @@ def run-script [context: record, ...args: string]: nothing -> record {
             cd ($context.module | path dirname)
             nu ($context.module) ...($arg_list | split row " ") | complete
         } catch {|err|
-            {exit_code: 1 stdout: "" stderr: $err.msg}
+            {exit_code: 1, stdout: "", stderr: $err.msg}
         }
     }
 }
@@ -247,15 +256,42 @@ def cleanup []: record -> nothing {
     remove-fixture $in
 }
 
+# Verify staging is the default even when shell environment variables request production.
+@test
+def prefrio-tf-plan-defaults-to-staging []: record -> nothing {
+    let fixture = $in
+    let result = with-env {TF_ENVIRONMENT: prod ENV: prod} {
+        run-module {
+            fixture: $fixture
+            module: $TF_SCRIPT
+            command: [tf]
+            directory: $fixture.directory
+        } plan
+    }
+
+    assert equal $result.exit_code 0 $result.stderr
+    let args = read-text $fixture.tofu_args | parse-json-list
+    assert ("-var=environment=staging" in $args)
+    assert ("-var=environment=prod" not-in $args)
+    assert ("-out=tofu.plan" in $args)
+    let variable_args = $args | where $it =~ ^-var-file=
+    assert (not ($variable_args | any { $in =~ terraform.tfvars.prod.sops.json$ }))
+}
+
 # Verify the Terraform command receives decrypted variables and kubeconfig paths.
 @test
 def prefrio-tf-plan-builds-expected-tofu-arguments []: record -> nothing {
     let fixture = $in
     let result = with-env {
-        K3S_SOPS_DIR: ($fixture.directory | path join .k3s)
+        K3S_SOPS_DIR: ($fixture.directory | path join .k3s),
         TF_DIR: ($fixture.directory | path join terraform)
     } {
-        run-module {fixture: $fixture module: $TF_SCRIPT command: [tf] directory: $fixture.directory} plan
+        run-module {
+            fixture: $fixture
+            module: $TF_SCRIPT
+            command: [tf]
+            directory: $fixture.directory
+        } plan
     }
 
     assert equal $result.exit_code 0 $result.stderr
@@ -279,7 +315,12 @@ def prefrio-tf-plan-uses-explicit-variables-file []: record -> nothing {
     write-file "{}" $override
     let result = with-env {TF_VARS_FILE: $override} {
         hide-env --ignore-errors TF_SOPS_FILE
-        run-module {fixture: $fixture module: $TF_SCRIPT command: [tf] directory: $fixture.directory} plan
+        run-module {
+            fixture: $fixture
+            module: $TF_SCRIPT
+            command: [tf]
+            directory: $fixture.directory
+        } plan
     }
 
     assert equal $result.exit_code 0 $result.stderr
@@ -288,16 +329,104 @@ def prefrio-tf-plan-uses-explicit-variables-file []: record -> nothing {
     assert (not ($args | any { "terraform.tfvars.sops.json" in $in }))
 }
 
+# Verify --prod requires an explicit production entry in the project file.
+@test
+def prefrio-tf-plan-requires-production-configuration []: record -> nothing {
+    let fixture = $in
+    let project = {
+        name: smoke
+        tf: {dir: terraform}
+        env: {
+            staging: {
+                project: rj-civitas-dev
+                vars: terraform.tfvars.sops.json
+                backend: {prefix: smoke/staging}
+            }
+        }
+    }
+    write-file ($project | to nuon) ($fixture.directory | path join .project.nuon)
+    let result = run-module {
+        fixture: $fixture
+        module: $TF_SCRIPT
+        command: [tf]
+        directory: $fixture.directory
+    } plan "--prod"
+
+    assert ($result.exit_code != 0)
+    assert ($result.stderr =~ "Environment 'prod' is not configured")
+}
+
+# Verify --prod selects the production environment and is consumed by prefrio.
+@test
+def prefrio-tf-plan-selects-production []: record -> nothing {
+    let fixture = $in
+    let result = run-module {
+        fixture: $fixture
+        module: $TF_SCRIPT
+        command: [tf]
+        directory: $fixture.directory
+    } plan "--prod"
+
+    assert equal $result.exit_code 0 $result.stderr
+    let args = read-text $fixture.tofu_args | parse-json-list
+    assert ("-var=environment=prod" in $args)
+    assert ("-var=environment=staging" not-in $args)
+    assert ("-out=tofu.prod.plan" in $args)
+    assert ("--prod" not-in $args)
+}
+
+# Verify production apply fails clearly when its saved plan is missing.
+@test
+def prefrio-tf-apply-requires-production-plan []: record -> nothing {
+    let fixture = $in
+    let plan = $fixture.directory | path join terraform tofu.prod.plan
+    try { rm --force $plan } catch {|err| test-error $err.msg }
+    let result = run-module {
+        fixture: $fixture
+        module: $TF_SCRIPT
+        command: [tf]
+        directory: $fixture.directory
+    } apply "--prod"
+
+    assert ($result.exit_code != 0)
+    assert ($result.stderr =~ "Production plan not found")
+    assert (not ($fixture.tofu_args | path exists))
+}
+
 # Verify apply uses the saved plan file and passes no variable options.
 @test
 def prefrio-tf-apply-uses-saved-plan-without-variables []: record -> nothing {
     let fixture = $in
-    let result = run-module {fixture: $fixture module: $TF_SCRIPT command: [tf] directory: $fixture.directory} apply
+    let result = run-module {
+        fixture: $fixture
+        module: $TF_SCRIPT
+        command: [tf]
+        directory: $fixture.directory
+    } apply
 
     assert equal $result.exit_code 0 $result.stderr
     let args = read-text $fixture.tofu_args | parse-json-list
     assert ("apply" in $args)
-    assert ("tofu.tfplan" in $args)
+    assert ("tofu.plan" in $args)
+    assert (not ($args | any { $in =~ ^-var }))
+}
+
+# Verify production apply uses only the production saved plan.
+@test
+def prefrio-tf-apply-uses-production-plan []: record -> nothing {
+    let fixture = $in
+    let result = run-module {
+        fixture: $fixture
+        module: $TF_SCRIPT
+        command: [tf]
+        directory: $fixture.directory
+    } apply "--prod"
+
+    assert equal $result.exit_code 0 $result.stderr
+    let args = read-text $fixture.tofu_args | parse-json-list
+    assert ("apply" in $args)
+    assert ("tofu.prod.plan" in $args)
+    assert ("tofu.plan" not-in $args)
     assert (not ($args | any { $in =~ ^-var }))
 }
 
@@ -305,7 +434,12 @@ def prefrio-tf-apply-uses-saved-plan-without-variables []: record -> nothing {
 @test
 def prefrio-tf-apply-exports-current-kubeconfig-path []: record -> nothing {
     let fixture = $in
-    let result = run-module {fixture: $fixture module: $TF_SCRIPT command: [tf] directory: $fixture.directory} apply
+    let result = run-module {
+        fixture: $fixture
+        module: $TF_SCRIPT
+        command: [tf]
+        directory: $fixture.directory
+    } apply
 
     assert equal $result.exit_code 0 $result.stderr
     let tofu_env = read-text $fixture.tofu_env | parse-json
@@ -320,7 +454,12 @@ def prefrio-tf-plan-detects-parent-project []: record -> nothing {
     let fixture = $in
     let nested = $fixture.directory | path join terraform modules service
     try { mkdir $nested } catch {|err| test-error $err.msg }
-    let result = run-module {fixture: $fixture module: $TF_SCRIPT command: [tf] directory: $nested} plan
+    let result = run-module {
+        fixture: $fixture
+        module: $TF_SCRIPT
+        command: [tf]
+        directory: $nested
+    } plan
 
     assert equal $result.exit_code 0 $result.stderr
     let args = read-text $fixture.tofu_args | parse-json-list
@@ -335,7 +474,12 @@ def prefrio-k3s-get-kubeconfig-uses-tailscale-sops-workflow []: record -> nothin
     let fixture = $in
     let sops_directory = $fixture.directory | path join generated-k3s
     let result = with-env {K3S_SOPS_DIR: $sops_directory} {
-        run-module {fixture: $fixture module: $K3S_SCRIPT command: [k3s] directory: $fixture.directory} get-kubeconfig
+        run-module {
+            fixture: $fixture
+            module: $K3S_SCRIPT
+            command: [k3s]
+            directory: $fixture.directory
+        } get-kubeconfig
     }
 
     assert equal $result.exit_code 0 $result.stderr
@@ -356,24 +500,89 @@ def prefrio-k3s-get-kubeconfig-uses-tailscale-sops-workflow []: record -> nothin
 @test
 def prefrio-auth-runs-gcloud-login-sequence []: record -> nothing {
     let fixture = $in
-    let result = run-script {fixture: $fixture module: $AUTH_SCRIPT command: [auth] directory: $fixture.directory}
+    let result = run-script {
+        fixture: $fixture
+        module: $AUTH_SCRIPT
+        command: [auth]
+        directory: $fixture.directory
+    }
 
     assert equal $result.exit_code 0 $result.stderr
-    let calls = read-text $fixture.gcloud_args | from json
-    assert equal $calls.0 [auth login]
-    assert equal $calls.1 [auth application-default login]
-    assert equal $calls.2 [auth application-default set-quota-project rj-iplanrio-dia]
+
+    let calls = try { read-text $fixture.gcloud_args | from json } catch {|err| test-error $err.msg }
+
+    assert equal $calls.0? [auth login]
+    assert equal $calls.1? [auth application-default login]
+    assert equal $calls.2? [auth application-default set-quota-project rj-iplanrio-dia]
 }
 
-# Verify k8s fetches GKE credentials using the project config.
+# Verify k8s fetches GKE credentials using the staging project by default.
 @test
 def prefrio-k8s-fetches-gke-credentials-from-project-config []: record -> nothing {
     let fixture = $in
-    let result = run-script {fixture: $fixture module: $AUTH_SCRIPT command: [k8s] directory: $fixture.directory}
+    let result = run-script {
+        fixture: $fixture
+        module: $AUTH_SCRIPT
+        command: [k8s]
+        directory: $fixture.directory
+    }
 
     assert equal $result.exit_code 0 $result.stderr
-    let calls = read-text $fixture.gcloud_args | from json
-    assert equal $calls.0 [container clusters get-credentials smoke-cluster --region us-central1 --project rj-civitas-dev]
+    let calls = try { read-text $fixture.gcloud_args | from json } catch {|err| test-error $err.msg }
+    assert equal $calls.0? [
+        container
+        clusters
+        get-credentials
+        smoke-cluster
+        --region
+        us-central1
+        --project
+        rj-civitas-dev
+    ]
+}
+
+# Verify k8s --prod uses the production project and consumes the flag.
+@test
+def prefrio-k8s-fetches-production-project []: record -> nothing {
+    let fixture = $in
+    let result = run-script {
+        fixture: $fixture
+        module: $AUTH_SCRIPT
+        command: [k8s]
+        directory: $fixture.directory
+    } "--prod"
+
+    assert equal $result.exit_code 0 $result.stderr
+    let calls = try { read-text $fixture.gcloud_args | from json } catch {|err| test-error $err.msg }
+    assert equal $calls.0? [
+        container
+        clusters
+        get-credentials
+        smoke-cluster
+        --region
+        us-central1
+        --project
+        rj-civitas-prod
+    ]
+    assert ("--prod" not-in $calls.0?)
+}
+
+# Verify tf init selects the production backend with --prod.
+@test
+def prefrio-tf-init-selects-production-backend []: record -> nothing {
+    let fixture = $in
+    let result = run-module {
+        fixture: $fixture
+        module: $TF_SCRIPT
+        command: [tf]
+        directory: $fixture.directory
+    } init "--prod"
+
+    assert equal $result.exit_code 0 $result.stderr
+    let args = read-text $fixture.tofu_args | parse-json-list
+    assert ("-backend-config=prefix=smoke/prod" in $args)
+    assert ("-backend-config=prefix=smoke/staging" not-in $args)
+    assert ("--prod" not-in $args)
 }
 
 # Verify tf init runs tofu init with upgrade and reconfigure.
@@ -381,10 +590,15 @@ def prefrio-k8s-fetches-gke-credentials-from-project-config []: record -> nothin
 def prefrio-tf-init-runs-tofu-init []: record -> nothing {
     let fixture = $in
     let result = with-env {
-        TF_DIR: ($fixture.directory | path join terraform)
-        TF_BACKEND_CONFIG: "prefix=smoke/staging"
+        TF_DIR: ($fixture.directory | path join terraform),
+        TF_BACKEND_CONFIG: prefix=smoke/staging
     } {
-        run-module {fixture: $fixture module: $TF_SCRIPT command: [tf] directory: $fixture.directory} init
+        run-module {
+            fixture: $fixture
+            module: $TF_SCRIPT
+            command: [tf]
+            directory: $fixture.directory
+        } init
     }
 
     assert equal $result.exit_code 0 $result.stderr
@@ -401,7 +615,12 @@ def prefrio-tf-init-runs-tofu-init []: record -> nothing {
 @test
 def prefrio-tf-edit-vars-opens-sops-file []: record -> nothing {
     let fixture = $in
-    let result = run-module {fixture: $fixture module: $TF_SCRIPT command: [tf] directory: $fixture.directory} edit-vars
+    let result = run-module {
+        fixture: $fixture
+        module: $TF_SCRIPT
+        command: [tf]
+        directory: $fixture.directory
+    } edit-vars
 
     assert equal $result.exit_code 0 $result.stderr
     let args = read-text $fixture.sops_args | parse-json-list
@@ -417,13 +636,18 @@ def prefrio-tf-edit-vars-opens-sops-file []: record -> nothing {
 @test
 def prefrio-k3s-runs-command-with-decrypted-kubeconfig []: record -> nothing {
     let fixture = $in
-    let result = run-module {fixture: $fixture module: $K3S_SCRIPT command: [k3s run kubectl get nodes] directory: $fixture.directory}
+    let result = run-module {
+        fixture: $fixture
+        module: $K3S_SCRIPT
+        command: [k3s run kubectl get nodes]
+        directory: $fixture.directory
+    }
 
     assert equal $result.exit_code 0 $result.stderr
     let kubectl = read-text $fixture.kubectl_args | parse-json
     assert equal $kubectl.args [get nodes]
     assert ($kubectl.kubeconfig != null)
-    assert (not ($kubectl.kubeconfig | is-empty))
+    assert ($kubectl.kubeconfig | is-not-empty)
 }
 
 # Verify run-command shows child output while the child still runs.

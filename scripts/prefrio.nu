@@ -28,8 +28,8 @@ export def "main auth" []: nothing -> nothing {
 }
 
 # Fetch GKE credentials for the project cluster.
-export def "main k8s" [...extra: string]: nothing -> nothing {
-    let config = load-project-config
+export def "main k8s" [--prod ...extra: string]: nothing -> nothing {
+    let config = if $prod { load-project-config --prod } else { load-project-config }
     let k8s = $config.k8s? | default null
     if $k8s == null {
         fail "No k8s configuration found in the project file." {

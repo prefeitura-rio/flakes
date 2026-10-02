@@ -99,14 +99,16 @@ def run-tofu [context: record]: nothing -> record {
         ...$context.extra
     ]
     let kubeconfig = $context.files | get --optional kubeconfig | default $context.inputs.kubeconfig
-    with-env (if $kubeconfig == null { {} } else { {KUBECONFIG: $kubeconfig KUBE_CONFIG_PATH: $kubeconfig} }) {
+    with-env (
+        if $kubeconfig == null { {} } else { {KUBECONFIG: $kubeconfig, KUBE_CONFIG_PATH: $kubeconfig} }
+    ) {
         run-command tofu ...$args
     }
 }
 
 # Run one Terraform action with optional SOPS variables and kubeconfig credentials.
-def run-terraform-action [action: string, ...extra: string]: nothing -> nothing {
-    let config = load-project-config
+def run-terraform-action [action: string, --prod, ...extra: string]: nothing -> nothing {
+    let config = if $prod { load-project-config --prod } else { load-project-config }
     let inputs = resolve-inputs $config
     let context = {
         action: $action
@@ -114,6 +116,20 @@ def run-terraform-action [action: string, ...extra: string]: nothing -> nothing 
         inputs: $inputs
         extra: $extra
     }
+
+    if $context.action == "apply" {
+        let plan_file = $inputs.directory | path join $config.tf.plan_file
+        if not (is-file $plan_file) {
+            let environment = $config.environment? | default "staging"
+            let label = if $environment == "prod" { "Production" } else { "Staging" }
+            let command = if $environment == "prod" { "prefrio tf plan --prod" } else { "prefrio tf plan" }
+            fail $"($label) plan not found: ($plan_file). Run ($command) first." {
+                command: apply
+                span: (metadata $plan_file).span
+            }
+        }
+    }
+
     if ($inputs.secrets | is-empty) {
         run-tofu ($context | insert files {})
     } else {
@@ -121,22 +137,23 @@ def run-terraform-action [action: string, ...extra: string]: nothing -> nothing 
             run-tofu ($context | insert files $files)
         }
     }
+
     log info $"Terraform ($action) completed"
 }
 
 # Run Terraform plan.
-export def "main tf plan" [...extra: string]: nothing -> nothing {
-    run-terraform-action plan ...$extra
+export def "main tf plan" [--prod, ...extra: string]: nothing -> nothing {
+    if $prod { run-terraform-action plan --prod ...$extra } else { run-terraform-action plan ...$extra }
 }
 
 # Run Terraform apply.
-export def "main tf apply" [...extra: string]: nothing -> nothing {
-    run-terraform-action apply ...$extra
+export def "main tf apply" [--prod, ...extra: string]: nothing -> nothing {
+    if $prod { run-terraform-action apply --prod ...$extra } else { run-terraform-action apply ...$extra }
 }
 
 # Destroy Terraform resources.
-export def "main tf destroy" [...extra: string]: nothing -> nothing {
-    run-terraform-action destroy ...$extra
+export def "main tf destroy" [--prod, ...extra: string]: nothing -> nothing {
+    if $prod { run-terraform-action destroy --prod ...$extra } else { run-terraform-action destroy ...$extra }
 }
 
 # Build backend-config arguments from the project config.
@@ -146,8 +163,8 @@ def build-backend-config-args [config: record]: nothing -> list<string> {
 }
 
 # Initialize the Terraform backend.
-export def "main tf init" [...extra: string]: nothing -> nothing {
-    let config = load-project-config
+export def "main tf init" [--prod, ...extra: string]: nothing -> nothing {
+    let config = if $prod { load-project-config --prod } else { load-project-config }
     let dir = $config.tf.dir
     let args = [
         $"-chdir=($dir)"
@@ -162,8 +179,8 @@ export def "main tf init" [...extra: string]: nothing -> nothing {
 }
 
 # Edit the SOPS-encrypted Terraform variables file.
-export def "main tf edit-vars" []: nothing -> nothing {
-    let config = load-project-config
+export def "main tf edit-vars" [--prod]: nothing -> nothing {
+    let config = if $prod { load-project-config --prod } else { load-project-config }
     let sops_file = $config.tf.vars.sops? | default null
     if $sops_file == null {
         fail "No SOPS-encrypted variables file found in the project file." {
