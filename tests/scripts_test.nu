@@ -117,6 +117,7 @@ def write-fake-sops [path: path]: nothing -> nothing {
 def --wrapped main [...args: string] {
     if $args.0? == edit {
         $args | to json | save --force $env.SOPS_ARGS_FILE
+        exit ($env.SOPS_EDIT_EXIT_CODE? | default 0 | into int)
     } else {
         let output_index = $args | enumerate | where item == \"--output\" | get index | first
         let output = $args | get ($output_index + 1)
@@ -630,6 +631,39 @@ def prefrio-tf-edit-vars-opens-sops-file []: record -> nothing {
     assert ("--output-type" in $args)
     let sops_file = $args | last
     assert (($sops_file | path basename) == terraform.tfvars.sops.json)
+}
+
+# Verify tf edit-vars accepts SOPS no-change status.
+@test
+def prefrio-tf-edit-vars-accepts-no-change-status []: record -> nothing {
+    let fixture = $in
+    let result = with-env {SOPS_EDIT_EXIT_CODE: "200"} {
+        run-module {
+            fixture: $fixture
+            module: $TF_SCRIPT
+            command: [tf]
+            directory: $fixture.directory
+        } edit-vars
+    }
+
+    assert equal $result.exit_code 0 $result.stderr
+}
+
+# Verify tf edit-vars still fails for SOPS errors.
+@test
+def prefrio-tf-edit-vars-rejects-error-status []: record -> nothing {
+    let fixture = $in
+    let result = with-env {SOPS_EDIT_EXIT_CODE: "1"} {
+        run-module {
+            fixture: $fixture
+            module: $TF_SCRIPT
+            command: [tf]
+            directory: $fixture.directory
+        } edit-vars
+    }
+
+    assert ($result.exit_code != 0)
+    assert ($result.stderr =~ "exit 1")
 }
 
 # Verify k3s run decrypts the kubeconfig and runs the command with KUBECONFIG set.

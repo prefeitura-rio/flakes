@@ -194,7 +194,7 @@ export def "main tf edit-vars" [--prod]: nothing -> nothing {
             span: (metadata $sops_file).span
         }
     }
-    run-command sops ...[
+    let result = run-command --allow-exit-code 200 sops ...[
         edit
         --input-type
         json
@@ -202,5 +202,9 @@ export def "main tf edit-vars" [--prod]: nothing -> nothing {
         json
         $sops_file
     ]
-    log info "Variables file edited"
+    if $result.exit_code == 200 {
+        log info "No variable changes to save"
+    } else {
+        log info "Variables file edited"
+    }
 }

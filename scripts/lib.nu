@@ -24,21 +24,28 @@ def format-failure [exit_code: int, ...words: string]: nothing -> string {
 # Run a command. Show child output live, or capture it with --quiet.
 export def run-command [
     --quiet # capture child output instead of showing it
+    --allow-exit-code: int # treat this nonzero exit status as success
     command: string
     ...args: string
 ]: nothing -> record {
     let span = (metadata $command).span
     if $quiet {
         let result = do { ^$command ...$args } | complete
-        if $result.exit_code != 0 {
+        if $result.exit_code != 0 and $result.exit_code != $allow_exit_code {
             fail (format-failure $result.exit_code $command ...$args) {command: $command span: $span}
         }
         return $result
     }
-    try { ^$command ...$args } catch {
-        fail (format-failure $env.LAST_EXIT_CODE $command ...$args) {command: $command span: $span}
+    let exit_code = try {
+        ^$command ...$args
+        0
+    } catch {
+        $env.LAST_EXIT_CODE
     }
-    {stdout: "" stderr: "" exit_code: 0}
+    if $exit_code != 0 and $exit_code != $allow_exit_code {
+        fail (format-failure $exit_code $command ...$args) {command: $command span: $span}
+    }
+    {stdout: "" stderr: "" exit_code: $exit_code}
 }
 
 # Decrypt named SOPS files, run an action with their plaintext paths, and clean up.
