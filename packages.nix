@@ -8,7 +8,9 @@ let
     cp ${./scripts/project.nu} $out/project.nu
   '';
   gcloud = (
-    pkgs.google-cloud-sdk.withExtraComponents (with pkgs.google-cloud-sdk.components; [ gke-gcloud-auth-plugin ])
+    pkgs.google-cloud-sdk.withExtraComponents (
+      with pkgs.google-cloud-sdk.components; [ gke-gcloud-auth-plugin ]
+    )
   );
   skim = "${pkgs.nushellPlugins.skim}/bin/nu_plugin_skim";
 in
@@ -16,20 +18,11 @@ in
   deps = pkgs.buildEnv {
     name = "deps";
     paths = with pkgs; [
-      ansible
-      git
-      jq
-      kubectl
-      kubernetes-helm
-      nu-lint
-      nushell
-      opentofu
-      prek
-      sops
-      tailscale
-      terragrunt
-      tflint
       gcloud
+      kubectl
+      opentofu
+      sops
+      terragrunt
     ];
   };
 
@@ -44,9 +37,7 @@ in
     runtimeInputs = with pkgs; [
       gcloud
       git
-      jq
       kubectl
-      kubernetes-helm
       nushell
       opentofu
       sops
