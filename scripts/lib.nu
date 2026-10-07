@@ -16,26 +16,13 @@ export def is-file [path: path]: nothing -> bool {
     if not ($path | path exists) { false } else { ($path | path type) == file }
 }
 
-# Format a failed command message.
-def format-failure [exit_code: int, ...words: string]: nothing -> string {
-    $"Command failed \(exit ($exit_code)\): ($words | str join ' ')"
-}
-
-# Run a command. Show child output live, or capture it with --quiet.
+# Run a command and show its output live. Fail on a nonzero exit status, except --allow-exit-code.
 export def run-command [
-    --quiet # capture child output instead of showing it
     --allow-exit-code: int # treat this nonzero exit status as success
     command: string
     ...args: string
 ]: nothing -> record {
     let span = (metadata $command).span
-    if $quiet {
-        let result = do { ^$command ...$args } | complete
-        if $result.exit_code != 0 and $result.exit_code != $allow_exit_code {
-            fail (format-failure $result.exit_code $command ...$args) {command: $command span: $span}
-        }
-        return $result
-    }
     let exit_code = try {
         ^$command ...$args
         0
@@ -43,7 +30,7 @@ export def run-command [
         $env.LAST_EXIT_CODE
     }
     if $exit_code != 0 and $exit_code != $allow_exit_code {
-        fail (format-failure $exit_code $command ...$args) {command: $command span: $span}
+        fail $"Command failed \(exit ($exit_code)\): ($command) ($args | str join ' ')" {command: $command span: $span}
     }
-    {stdout: "" stderr: "" exit_code: $exit_code}
+    {exit_code: $exit_code}
 }

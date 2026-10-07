@@ -1,9 +1,14 @@
 use std/log
 use ./lib.nu [run-command fail is-file]
-use ./project.nu [load-project-config]
+
+# Find the Git repository root, or use the current directory outside a repository.
+def project-root []: nothing -> path {
+    let result = do { git rev-parse --show-toplevel } | complete
+    if $result.exit_code == 0 { $result.stdout | str trim } else { pwd | path expand }
+}
 
 # Resolve the directory where Terragrunt runs from the required TG_WORKING_DIR variable.
-# A relative value is resolved from the project root.
+# A relative value is resolved from the Git repository root.
 def resolve-working-dir [root: path]: nothing -> path {
     let value = $env.TG_WORKING_DIR? | default null
     if $value == null or $value == "" {
@@ -26,7 +31,7 @@ def resolve-working-dir [root: path]: nothing -> path {
 # Run one action across every Terragrunt unit below TG_WORKING_DIR.
 # Plans are saved per unit under terragrunt.plan there; apply uses them. Terragrunt asks once before apply and destroy.
 def run-terragrunt [action: string, ...extra: string]: nothing -> nothing {
-    let working_dir = resolve-working-dir (load-project-config).root
+    let working_dir = resolve-working-dir (project-root)
     let plan_dir = $working_dir | path join terragrunt.plan
     if $action == apply and not ($plan_dir | path exists) {
         fail $"Terragrunt plan not found: ($plan_dir). Run prefrio tf plan first." {
@@ -115,7 +120,7 @@ export def "main tf destroy" [...extra: string]: nothing -> nothing {
 export def "main tf edit-vars" [file?: path]: nothing -> nothing {
     let sops_file = if $file != null {
         $file | path expand
-    } else { choose-tfvars-file (load-project-config).root }
+    } else { choose-tfvars-file (project-root) }
 
     if $sops_file == null {
         log info "No variables file selected"

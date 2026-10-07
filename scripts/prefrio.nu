@@ -1,52 +1,28 @@
 use std/log
 use ./tf.nu *
 use ./lib.nu [run-command fail]
-use ./project.nu [load-project-config]
 
 const QUOTA_PROJECT = "rj-iplanrio-dia"
 const K3S_API = "https://tailscale-operator-onprem.squirrel-regulus.ts.net"
 
-if $env.PREFRIO_WORKDIR? != null {
-    try { cd $env.PREFRIO_WORKDIR } catch {
-        error make {
-            msg: $"Cannot change to PREFRIO_WORKDIR: ($env.PREFRIO_WORKDIR)."
-            label: {
-                text: PREFRIO_WORKDIR
-                span: (metadata $env.PREFRIO_WORKDIR).span
-            }
-        }
-    }
-}
-
-# Fetch GKE credentials for the project cluster.
-export def "main get-kubeconfig" [...extra: string]: nothing -> nothing {
-    let config = load-project-config
-    let k8s = $config.k8s? | default null
-
-    if $k8s == null {
-        fail "No k8s configuration found in the project file." {
-            command: k8s
-            span: (metadata $config).span
+# Fetch GKE credentials for CLOUDSDK_CONTAINER_CLUSTER. Project and region come from CLOUDSDK_CORE_PROJECT and CLOUDSDK_COMPUTE_REGION.
+export def --wrapped "main get-kubeconfig" [...extra: string]: nothing -> nothing {
+    let cluster = $env.CLOUDSDK_CONTAINER_CLUSTER? | default null
+    if $cluster == null or $cluster == "" {
+        fail "Set CLOUDSDK_CONTAINER_CLUSTER to the cluster name." {
+            command: get-kubeconfig
+            span: (metadata $cluster).span
         }
     }
 
-    if $k8s.cluster? == null { fail "Missing k8s.cluster in the project file." {command: k8s span: (metadata $k8s).span} }
-    if $k8s.region? == null { fail "Missing k8s.region in the project file." {command: k8s span: (metadata $k8s).span} }
-    if $config.project? == null { fail "Missing project in the project file." {command: k8s span: (metadata $config).span} }
-
-    log info "Fetching Kubernetes credentials..."
     run-command gcloud ...[
         container
         clusters
         get-credentials
-        $k8s.cluster
-        --region
-        $k8s.region
-        --project
-        $config.project
+        $cluster
         ...$extra
     ]
-    log info "Credentials configured"
+    | ignore
 }
 
 # Authenticate with Google Cloud and set the quota project.

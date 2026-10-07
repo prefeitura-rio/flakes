@@ -38,14 +38,8 @@ def write-file [content: string path: path]: nothing -> nothing {
     }
 }
 
-# Write the project file, Terragrunt units and encrypted files of an isolated fixture.
+# Write the Terragrunt units and encrypted files of an isolated fixture.
 def write-project-fixture [directory: path]: nothing -> nothing {
-    let project = {
-        name: smoke
-        project: rj-civitas-dev
-        k8s: {cluster: smoke-cluster, region: us-central1}
-    }
-    write-file ($project | to nuon) ($directory | path join .project.nuon)
     for unit in [a b] {
         write-file "" ($directory | path join live $unit terragrunt.hcl)
     }
@@ -170,9 +164,9 @@ def run-script [context: record, ...args: string]: nothing -> record {
     let arg_list = $context.command
     | append $args
     | str join " "
-    with-env (fixture-env $context.fixture | insert PREFRIO_WORKDIR $context.directory | merge ($context.env? | default {})) {
+    with-env (fixture-env $context.fixture | merge ($context.env? | default {})) {
         try {
-            cd ($context.module | path dirname)
+            cd $context.directory
             nu ($context.module) ...($arg_list | split row " ") | complete
         } catch {|err|
             {exit_code: 1, stdout: "", stderr: $err.msg}
@@ -242,13 +236,26 @@ def prefrio-tf-plan-clears-stale-plans []: record -> nothing {
     assert (not ($stale | path exists)) "A stale unit plan survived."
 }
 
-# Verify project discovery from a child directory.
+# Verify the Git repository root is the project root from a child directory.
 @test
-def prefrio-tf-plan-detects-parent-project []: record -> nothing {
+def prefrio-tf-plan-uses-git-root-from-a-child-directory []: record -> nothing {
     let fixture = $in
     let nested = $fixture.directory | path join live a modules service
     try { mkdir $nested } catch {|err| test-error $err.msg }
+    let init = git init --quiet $fixture.directory | complete
+    assert equal $init.exit_code 0 $init.stderr
     let result = run-tf-in {fixture: $fixture directory: $nested} plan
+
+    assert equal $result.exit_code 0 $result.stderr
+    let args = read-text $fixture.terragrunt_args | parse-json-list
+    assert (($fixture | live-dir) in $args)
+}
+
+# Verify the current directory is the root outside a Git repository.
+@test
+def prefrio-tf-plan-uses-current-directory-outside-git []: record -> nothing {
+    let fixture = $in
+    let result = run-tf $fixture plan
 
     assert equal $result.exit_code 0 $result.stderr
     let args = read-text $fixture.terragrunt_args | parse-json-list
@@ -416,29 +423,55 @@ def prefrio-auth-runs-gcloud-login-sequence []: record -> nothing {
     assert equal $calls.2? [auth application-default set-quota-project rj-iplanrio-dia]
 }
 
-# Verify get-kubeconfig fetches GKE credentials from the project file.
+# Verify get-kubeconfig fetches GKE credentials for the cluster in CLOUDSDK_CONTAINER_CLUSTER.
 @test
-def prefrio-get-kubeconfig-fetches-gke-credentials-from-project-config []: record -> nothing {
+def prefrio-get-kubeconfig-fetches-gke-credentials-for-the-env-cluster []: record -> nothing {
     let fixture = $in
     let result = run-script {
         fixture: $fixture
         module: $AUTH_SCRIPT
         command: [get-kubeconfig]
         directory: $fixture.directory
+        env: {CLOUDSDK_CONTAINER_CLUSTER: gitlab}
     }
 
     assert equal $result.exit_code 0 $result.stderr
     let calls = try { read-text $fixture.gcloud_args | from json } catch {|err| test-error $err.msg }
-    assert equal $calls.0? [
-        container
-        clusters
-        get-credentials
-        smoke-cluster
-        --region
-        us-central1
-        --project
-        rj-civitas-dev
-    ]
+    assert equal $calls.0? [container clusters get-credentials gitlab]
+}
+
+# Verify get-kubeconfig forwards extra flags to gcloud.
+@test
+def prefrio-get-kubeconfig-forwards-gcloud-flags []: record -> nothing {
+    let fixture = $in
+    let result = run-script {
+        fixture: $fixture
+        module: $AUTH_SCRIPT
+        command: [get-kubeconfig]
+        directory: $fixture.directory
+        env: {CLOUDSDK_CONTAINER_CLUSTER: gitlab}
+    } "--region" us-central1
+
+    assert equal $result.exit_code 0 $result.stderr
+    let calls = try { read-text $fixture.gcloud_args | from json } catch {|err| test-error $err.msg }
+    assert equal $calls.0? [container clusters get-credentials gitlab --region us-central1]
+}
+
+# Verify get-kubeconfig requires CLOUDSDK_CONTAINER_CLUSTER.
+@test
+def prefrio-get-kubeconfig-requires-a-cluster []: record -> nothing {
+    let fixture = $in
+    let result = run-script {
+        fixture: $fixture
+        module: $AUTH_SCRIPT
+        command: [get-kubeconfig]
+        directory: $fixture.directory
+        env: {CLOUDSDK_CONTAINER_CLUSTER: ""}
+    }
+
+    assert ($result.exit_code != 0)
+    assert ($result.stderr =~ "Set CLOUDSDK_CONTAINER_CLUSTER")
+    assert (not ($fixture.gcloud_args | path exists))
 }
 
 # Verify k runs kubectl against the Tailscale API with an empty kubeconfig.
@@ -483,51 +516,6 @@ def prefrio-k-uses-kube-host-when-set []: record -> nothing {
     assert equal $result.exit_code 0 $result.stderr
     let kubectl = read-text $fixture.kubectl_args | parse-json
     assert equal ($kubectl.args | first 2) [--server https://k3s.example.test]
-}
-
-# Verify tf works without a project file, using the current directory as the root.
-@test
-def prefrio-tf-plan-works-without-project-file []: record -> nothing {
-    let fixture = $in
-    try { rm --force ($fixture.directory | path join .project.nuon) } catch {|err| test-error $err.msg }
-    let result = run-tf $fixture plan
-
-    assert equal $result.exit_code 0 $result.stderr
-    let args = read-text $fixture.terragrunt_args | parse-json-list
-    assert (($fixture | live-dir) in $args)
-}
-
-# Verify the Git repository root is the project root when no project file exists.
-@test
-def prefrio-tf-plan-uses-git-root-without-project-file []: record -> nothing {
-    let fixture = $in
-    try { rm --force ($fixture.directory | path join .project.nuon) } catch {|err| test-error $err.msg }
-    let nested = $fixture.directory | path join live a modules service
-    try { mkdir $nested } catch {|err| test-error $err.msg }
-    let init = git init --quiet $fixture.directory | complete
-    assert equal $init.exit_code 0 $init.stderr
-    let result = run-tf-in {fixture: $fixture directory: $nested} plan
-
-    assert equal $result.exit_code 0 $result.stderr
-    let args = read-text $fixture.terragrunt_args | parse-json-list
-    assert (($fixture | live-dir) in $args)
-}
-
-# Verify get-kubeconfig explains the missing configuration when there is no project file.
-@test
-def prefrio-get-kubeconfig-requires-k8s-configuration []: record -> nothing {
-    let fixture = $in
-    try { rm --force ($fixture.directory | path join .project.nuon) } catch {|err| test-error $err.msg }
-    let result = run-script {
-        fixture: $fixture
-        module: $AUTH_SCRIPT
-        command: [get-kubeconfig]
-        directory: $fixture.directory
-    }
-
-    assert ($result.exit_code != 0)
-    assert ($result.stderr =~ "No k8s configuration found")
-    assert (not ($fixture.gcloud_args | path exists))
 }
 
 # Verify tf commands refuse to run without TG_WORKING_DIR.

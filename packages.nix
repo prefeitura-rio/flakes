@@ -5,7 +5,6 @@ let
     cp ${./scripts/prefrio.nu} $out/prefrio.nu
     cp ${./scripts/lib.nu} $out/lib.nu
     cp ${./scripts/tf.nu} $out/tf.nu
-    cp ${./scripts/project.nu} $out/project.nu
   '';
   gcloud = (
     pkgs.google-cloud-sdk.withExtraComponents (
@@ -29,9 +28,7 @@ in
   prefrio = pkgs.writeShellApplication {
     name = "prefrio";
     text = ''
-      workdir="$PWD"
-      cd ${scripts}
-      PREFRIO_WORKDIR="$workdir" exec ${pkgs.nushell}/bin/nu --plugins '[${skim}]' ${scripts}/prefrio.nu "$@"
+      exec ${pkgs.nushell}/bin/nu --plugins '[${skim}]' ${scripts}/prefrio.nu "$@"
     '';
 
     runtimeInputs = with pkgs; [
