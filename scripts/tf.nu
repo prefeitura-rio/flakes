@@ -29,7 +29,7 @@ def resolve-working-dir [root: path]: nothing -> path {
 }
 
 # Run one action across every Terragrunt unit below TG_WORKING_DIR.
-# Plans are saved per unit under terragrunt.plan there; apply uses them. Terragrunt asks once before apply and destroy.
+# Plans are saved per unit under terragrunt.plan there; apply uses them. Terragrunt asks once before apply.
 def run-terragrunt [action: string, ...extra: string]: nothing -> nothing {
     let working_dir = resolve-working-dir (project-root)
     let plan_dir = $working_dir | path join terragrunt.plan
@@ -58,7 +58,7 @@ def run-terragrunt [action: string, ...extra: string]: nothing -> nothing {
         --working-dir
         $working_dir
         ...(if $action in [plan apply] { [--out-dir $plan_dir] } else { [] })
-        ...(if $action in [apply destroy] { $approval } else { [] })
+        ...(if $action == apply { $approval } else { [] })
         --
         $action
         ...(if $action == init { [-reconfigure] } else { [] })
@@ -109,11 +109,6 @@ export def "main tf plan" [...extra: string]: nothing -> nothing {
 # Apply the saved plans of every Terragrunt unit.
 export def "main tf apply" [...extra: string]: nothing -> nothing {
     run-terragrunt apply ...$extra
-}
-
-# Destroy every Terragrunt unit.
-export def "main tf destroy" [...extra: string]: nothing -> nothing {
-    run-terragrunt destroy ...$extra
 }
 
 # Edit a SOPS variables file. Without a path, choose one of the project files with a fuzzy finder.

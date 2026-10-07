@@ -300,17 +300,6 @@ def prefrio-tf-apply-auto-approves-on-request []: record -> nothing {
     assert ("--non-interactive" in $args)
 }
 
-# Verify destroy runs all units without a saved plan and keeps the confirmation.
-@test
-def prefrio-tf-destroy-confirms-without-saved-plan []: record -> nothing {
-    let fixture = $in
-    let result = run-tf $fixture destroy
-
-    assert equal $result.exit_code 0 $result.stderr
-    let args = read-text $fixture.terragrunt_args | parse-json-list
-    assert equal $args [run --all --working-dir ($fixture | live-dir) -- destroy]
-}
-
 # Verify init reconfigures every unit backend.
 @test
 def prefrio-tf-init-reconfigures-all-units []: record -> nothing {

@@ -20,12 +20,11 @@ prefrio k get pods -n gitlab    # kubectl through the Tailscale K3s API
 prefrio tf init
 prefrio tf plan
 prefrio tf apply
-prefrio tf destroy
 prefrio tf edit-vars [file]
 ```
 
 - **`tf`** runs `terragrunt run --all` in `TG_WORKING_DIR`. A relative path is resolved from the Git root, or the current directory outside a repository.
-- **`plan`** saves plans in `terragrunt.plan/`. `apply` uses them and fails without them. Terragrunt asks once before `apply` and `destroy`; `TF_AUTO_APPROVE` skips the question.
+- **`plan`** saves plans in `terragrunt.plan/`. `apply` uses them and fails without them. Terragrunt asks once before `apply`; `TF_AUTO_APPROVE` skips the question.
 - **`edit-vars`** runs `sops edit`. Without a path it picks among `*.tfvars.sops.json` files, with a fuzzy finder when there are several.
 - **`get-kubeconfig`** passes extra flags to `gcloud`, for example `--region`. For another cluster, set `CLOUDSDK_CONTAINER_CLUSTER` on that command.
 - **`k`** needs no kubeconfig. `KUBE_HOST` replaces the default API server and is also read by the Terraform providers.
