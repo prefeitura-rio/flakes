@@ -47,33 +47,3 @@ export def run-command [
     }
     {stdout: "" stderr: "" exit_code: $exit_code}
 }
-
-# Decrypt named SOPS files, run an action with their plaintext paths, and clean up.
-export def run-with-sops [secrets: record, action: closure]: nothing -> nothing {
-    let temp_dir = (run-command --quiet mktemp ...[--directory]).stdout | str trim
-    try {
-        let files = $secrets
-        | items {|name encrypted|
-            if not (is-file $encrypted) {
-                fail $"Missing SOPS file: ($encrypted)." {
-                    command: run-with-sops
-                    span: (metadata $encrypted).span
-                }
-            }
-            let plaintext = $temp_dir | path join $name
-            run-command sops ...[
-                decrypt
-                --output
-                $plaintext
-                $encrypted
-            ]
-            {name: $name value: $plaintext}
-        }
-        | reduce --fold {} {|entry result|
-            $result | insert $entry.name $entry.value
-        }
-        do $action $files
-    } finally {
-        rm --recursive --force $temp_dir
-    }
-}

@@ -1,210 +1,140 @@
-# nu-lint-ignore-file: max_positional_params
-
 use std/log
-use ./lib.nu [run-command fail is-file run-with-sops]
+use ./lib.nu [run-command fail is-file]
 use ./project.nu [load-project-config]
 
-# Resolve Terraform files and optional kubeconfig inputs.
-def resolve-inputs [config: record]: nothing -> record {
-    let tf = $config | get tf
-    let tfdir = $tf | get dir
-    let vars = $tf | get vars
-    let variables = $vars | get --optional plain | default ($vars | get --optional sops | default null)
-    let sops_file = $vars | get --optional sops | default null
-    let variables = if $variables == null or ($variables | path type) == absolute {
-        $variables
-    } else {
-        $tfdir | path join $variables
-    }
-    let k3s = $config.k3s? | default {}
-    let kubeconfig_value = $k3s.kubeconfig? | default null
-    let kubeconfig = if $kubeconfig_value == null { null } else {
-        $kubeconfig_value | path expand
-    }
-    if $variables != null and not (is-file $variables) {
-        fail $"Terraform variables file not found: ($variables)." {
-            command: terraform
-            span: (metadata $variables).span
+# Resolve the directory where Terragrunt runs from the required TG_WORKING_DIR variable.
+# A relative value is resolved from the project root.
+def resolve-working-dir [root: path]: nothing -> path {
+    let value = $env.TG_WORKING_DIR? | default null
+    if $value == null or $value == "" {
+        fail "Set TG_WORKING_DIR to the directory where Terragrunt should run." {
+            command: terragrunt
+            span: (metadata $value).span
         }
     }
-    if $kubeconfig != null and not (is-file $kubeconfig) {
-        fail $"Terraform kubeconfig file not found: ($kubeconfig)." {
-            command: terraform
-            span: (metadata $kubeconfig).span
+
+    let directory = $root | path join $value | path expand
+    if not ($directory | path exists) {
+        fail $"TG_WORKING_DIR does not exist: ($directory)." {
+            command: terragrunt
+            span: (metadata $directory).span
         }
     }
-    let secrets = {}
-    | if $sops_file != null { upsert tfvars $variables } else { }
-    | if $kubeconfig != null { upsert kubeconfig $kubeconfig } else { }
-    {
-        directory: $tfdir
-        variables: $variables
-        kubeconfig: $kubeconfig
-        secrets: $secrets
+    $directory
+}
+
+# Run one action across every Terragrunt unit below TG_WORKING_DIR.
+# Plans are saved per unit under terragrunt.plan there; apply uses them. Terragrunt asks once before apply and destroy.
+def run-terragrunt [action: string, ...extra: string]: nothing -> nothing {
+    let working_dir = resolve-working-dir (load-project-config).root
+    let plan_dir = $working_dir | path join terragrunt.plan
+    if $action == apply and not ($plan_dir | path exists) {
+        fail $"Terragrunt plan not found: ($plan_dir). Run prefrio tf plan first." {
+            command: apply
+            span: (metadata $plan_dir).span
+        }
     }
-}
 
-# Build arguments for a variables file.
-def build-variable-args [files: record, inputs: record]: nothing -> list<string> {
-    let tfvars = $files | get --optional tfvars | default $inputs.variables
-    if $tfvars == null { [] } else { [$"-var-file=($tfvars)"] }
-}
+    if $action == plan {
+        try { rm --recursive --force $plan_dir } catch {|err| fail $"Could not remove old plans in ($plan_dir): ($err.msg)" {
+                command: plan
+                span: (metadata $plan_dir).span
+            } }
+    }
 
-# Build arguments for an optional kubeconfig.
-def build-kubeconfig-args [files: record, inputs: record]: nothing -> list<string> {
-    let kubeconfig = $files | get --optional kubeconfig | default $inputs.kubeconfig
-    if $kubeconfig == null { [] } else { [$"-var=kubeconfig_path=($kubeconfig)"] }
-}
-
-# Build action-specific Terraform arguments.
-def build-approval-args [action: string]: nothing -> list<string> {
-    if $action != apply { return [] }
-    match ($env.TF_AUTO_APPROVE? | default null) {
+    let approval = match ($env.TF_AUTO_APPROVE? | default null) {
         null | "" => []
-        _ => [--auto-approve]
+        _ => [--non-interactive]
     }
-}
 
-# Build variable arguments. Apply gets none because a saved plan holds its variables.
-def build-input-args [context: record]: nothing -> list<string> {
-    if $context.action == apply { return [] }
-    [
-        ...(build-variable-args $context.files $context.inputs)
-        ...(build-kubeconfig-args $context.files $context.inputs)
-        ...(
-            if $context.config.environment == null { [] } else { [$"-var=environment=($context.config.environment)"] }
-        )
-    ]
-}
-
-# Build the saved plan file argument.
-def build-plan-args [context: record]: nothing -> list<string> {
-    let plan_file = $context.config.tf.plan_file
-    match $context.action {
-        plan => [$"-out=($plan_file)"]
-        apply => [$plan_file]
-        _ => []
-    }
-}
-
-# Execute Terraform with an optional kubeconfig.
-# KUBE_CONFIG_PATH gives providers the current decrypted file. A saved plan keeps the old temporary path.
-def run-tofu [context: record]: nothing -> record {
     let args = [
-        $"-chdir=($context.inputs.directory)"
-        $context.action
-        ...(build-input-args $context)
-        ...(build-plan-args $context)
-        ...(build-approval-args $context.action)
-        ...$context.extra
+        run
+        --all
+        --working-dir
+        $working_dir
+        ...(if $action in [plan apply] { [--out-dir $plan_dir] } else { [] })
+        ...(if $action in [apply destroy] { $approval } else { [] })
+        --
+        $action
+        ...(if $action == init { [-reconfigure] } else { [] })
+        ...$extra
     ]
-    let kubeconfig = $context.files | get --optional kubeconfig | default $context.inputs.kubeconfig
-    with-env (
-        if $kubeconfig == null { {} } else { {KUBECONFIG: $kubeconfig, KUBE_CONFIG_PATH: $kubeconfig} }
-    ) {
-        run-command tofu ...$args
-    }
+    run-command terragrunt ...$args
+    log info $"Terragrunt ($action) completed"
 }
 
-# Run one Terraform action with optional SOPS variables and kubeconfig credentials.
-def run-terraform-action [action: string, --prod, ...extra: string]: nothing -> nothing {
-    let config = if $prod { load-project-config --prod } else { load-project-config }
-    let inputs = resolve-inputs $config
-    let context = {
-        action: $action
-        config: $config
-        inputs: $inputs
-        extra: $extra
-    }
-
-    if $context.action == "apply" {
-        let plan_file = $inputs.directory | path join $config.tf.plan_file
-        if not (is-file $plan_file) {
-            let environment = $config.environment? | default "staging"
-            let label = if $environment == "prod" { "Production" } else { "Staging" }
-            let command = if $environment == "prod" { "prefrio tf plan --prod" } else { "prefrio tf plan" }
-            fail $"($label) plan not found: ($plan_file). Run ($command) first." {
-                command: apply
-                span: (metadata $plan_file).span
+# Choose one SOPS variables file with a fuzzy finder.
+def choose-tfvars-file [root: path]: nothing -> oneof<string, nothing> {
+    let files = glob ($root | path join "**/*.tfvars.sops.json") --no-dir --exclude ["**/.terragrunt-cache/**" "**/.terraform/**"] | sort
+    match ($files | length) {
+        0 => {
+            fail $"No *.tfvars.sops.json files found under ($root)." {
+                command: edit-vars
+                span: (metadata $root).span
+            }
+        }
+        1 => {
+            $files | first
+        }
+        _ => {
+            if (scope commands | where name == sk | is-empty) {
+                fail "The skim plugin is not loaded. Pass the file path or run prefrio from the Nix package." {
+                    command: edit-vars
+                    span: (metadata $root).span
+                }
+            }
+            let choice = $files | path relative-to $root | sk --prompt "tfvars> " | default null
+            if $choice == null { null } else {
+                $root | path join $choice
             }
         }
     }
-
-    if ($inputs.secrets | is-empty) {
-        run-tofu ($context | insert files {})
-    } else {
-        run-with-sops $inputs.secrets {|files|
-            run-tofu ($context | insert files $files)
-        }
-    }
-
-    log info $"Terraform ($action) completed"
 }
 
-# Run Terraform plan.
-export def "main tf plan" [--prod, ...extra: string]: nothing -> nothing {
-    if $prod { run-terraform-action plan --prod ...$extra } else { run-terraform-action plan ...$extra }
+# Initialize every Terragrunt unit.
+export def "main tf init" [...extra: string]: nothing -> nothing {
+    run-terragrunt init ...$extra
 }
 
-# Run Terraform apply.
-export def "main tf apply" [--prod, ...extra: string]: nothing -> nothing {
-    if $prod { run-terraform-action apply --prod ...$extra } else { run-terraform-action apply ...$extra }
+# Plan every Terragrunt unit and save the plans.
+export def "main tf plan" [...extra: string]: nothing -> nothing {
+    run-terragrunt plan ...$extra
 }
 
-# Destroy Terraform resources.
-export def "main tf destroy" [--prod, ...extra: string]: nothing -> nothing {
-    if $prod { run-terraform-action destroy --prod ...$extra } else { run-terraform-action destroy ...$extra }
+# Apply the saved plans of every Terragrunt unit.
+export def "main tf apply" [...extra: string]: nothing -> nothing {
+    run-terragrunt apply ...$extra
 }
 
-# Build backend-config arguments from the project config.
-def build-backend-config-args [config: record]: nothing -> list<string> {
-    let backend = $config.tf.backend? | default {}
-    $backend | items {|key value| $"-backend-config=($key)=($value)" }
+# Destroy every Terragrunt unit.
+export def "main tf destroy" [...extra: string]: nothing -> nothing {
+    run-terragrunt destroy ...$extra
 }
 
-# Initialize the Terraform backend.
-export def "main tf init" [--prod, ...extra: string]: nothing -> nothing {
-    let config = if $prod { load-project-config --prod } else { load-project-config }
-    let dir = $config.tf.dir
-    let args = [
-        $"-chdir=($dir)"
-        init
-        ...(build-backend-config-args $config)
-        -upgrade
-        -reconfigure
-        ...$extra
-    ]
-    run-command tofu ...$args
-    log info "Terraform initialized"
-}
+# Edit a SOPS variables file. Without a path, choose one of the project files with a fuzzy finder.
+export def "main tf edit-vars" [file?: path]: nothing -> nothing {
+    let sops_file = if $file != null {
+        $file | path expand
+    } else { choose-tfvars-file (load-project-config).root }
 
-# Edit the SOPS-encrypted Terraform variables file.
-export def "main tf edit-vars" [--prod]: nothing -> nothing {
-    let config = if $prod { load-project-config --prod } else { load-project-config }
-    let sops_file = $config.tf.vars.sops? | default null
     if $sops_file == null {
-        fail "No SOPS-encrypted variables file found in the project file." {
-            command: edit-vars
-            span: (metadata $config).span
-        }
+        log info "No variables file selected"
+        return
     }
+
     if not (is-file $sops_file) {
         fail $"SOPS variables file not found: ($sops_file)." {
             command: edit-vars
             span: (metadata $sops_file).span
         }
     }
-    let result = run-command --allow-exit-code 200 sops ...[
-        edit
-        --input-type
-        json
-        --output-type
-        json
-        $sops_file
-    ]
+
+    let result = run-command --allow-exit-code 200 sops ...[edit $sops_file]
+
     if $result.exit_code == 200 {
         log info "No variable changes to save"
-    } else {
-        log info "Variables file edited"
+        return
     }
+
+    log info "Variables file edited"
 }

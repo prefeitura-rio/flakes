@@ -3,7 +3,6 @@ let
   scripts = pkgs.runCommand "prefrio-scripts" { } ''
     mkdir -p $out
     cp ${./scripts/prefrio.nu} $out/prefrio.nu
-    cp ${./scripts/k3s.nu} $out/k3s.nu
     cp ${./scripts/lib.nu} $out/lib.nu
     cp ${./scripts/tf.nu} $out/tf.nu
     cp ${./scripts/project.nu} $out/project.nu
@@ -11,6 +10,7 @@ let
   gcloud = (
     pkgs.google-cloud-sdk.withExtraComponents (with pkgs.google-cloud-sdk.components; [ gke-gcloud-auth-plugin ])
   );
+  skim = "${pkgs.nushellPlugins.skim}/bin/nu_plugin_skim";
 in
 {
   deps = pkgs.buildEnv {
@@ -27,6 +27,7 @@ in
       prek
       sops
       tailscale
+      terragrunt
       tflint
       gcloud
     ];
@@ -37,7 +38,7 @@ in
     text = ''
       workdir="$PWD"
       cd ${scripts}
-      PREFRIO_WORKDIR="$workdir" exec ${pkgs.nushell}/bin/nu ${scripts}/prefrio.nu "$@"
+      PREFRIO_WORKDIR="$workdir" exec ${pkgs.nushell}/bin/nu --plugins '[${skim}]' ${scripts}/prefrio.nu "$@"
     '';
 
     runtimeInputs = with pkgs; [
@@ -49,7 +50,7 @@ in
       nushell
       opentofu
       sops
-      tailscale
+      terragrunt
     ];
   };
 }
