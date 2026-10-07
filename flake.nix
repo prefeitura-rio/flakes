@@ -19,11 +19,7 @@
         pkgs = import inputs.nixpkgs { inherit system; };
         treefmtEval = inputs.treefmt-nix.lib.evalModule pkgs {
           projectRootFile = "flake.nix";
-          programs = {
-            ruff-format.enable = true;
-            ruff-check.enable = true;
-            nixfmt.enable = true;
-          };
+          programs.nixfmt.enable = true;
         };
       in
       {
@@ -31,12 +27,13 @@
         formatter = treefmtEval.config.build.wrapper;
 
         devShells.default = pkgs.mkShell {
+          NU_LIB_DIRS = "${inputs.nutest}";
+
           packages = with pkgs; [
             treefmtEval.config.build.wrapper
             nu-lint
             nushell
           ];
-          NU_LIB_DIRS = "${inputs.nutest}";
         };
       }
     );
