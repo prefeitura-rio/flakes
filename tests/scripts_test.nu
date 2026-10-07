@@ -1,4 +1,4 @@
-# nu-lint-ignore-file: redundant_nu_subprocess, unused_helper_functions
+# nu-lint-ignore-file: redundant_nu_subprocess, unused_helper_functions, catch_builtin_error_try
 
 use std/assert
 use std/testing *
@@ -99,6 +99,15 @@ def write-fake-terragrunt [path: path]: nothing -> nothing {
     write-file "#!/usr/bin/env -S nu
 def --wrapped main [...args: string] {
     $args | to json | save --force $env.TERRAGRUNT_ARGS_FILE
+    let out_index = ($args | enumerate | where item == "--out-dir" | get index? | first)
+    if $out_index != null {
+        mkdir ($args | get ($out_index + 1))
+    }
+    for arg in $args {
+        if ($arg | str starts-with "-out=") {
+            "" | save --force ($arg | str replace "-out=" "")
+        }
+    }
 }
 " $path
     make-executable $path
@@ -139,7 +148,6 @@ def fixture-env [fixture: record]: nothing -> record {
         KUBECTL_ARGS_FILE: $fixture.kubectl_args
         GCLOUD_ARGS_FILE: $fixture.gcloud_args
         SOPS_ARGS_FILE: $fixture.sops_args
-        TG_WORKING_DIR: live
     }
 }
 
@@ -212,97 +220,9 @@ def cleanup []: record -> nothing {
     remove-fixture $in
 }
 
-# Verify plan runs every unit and saves plans under the project root.
+# Verify init initializes every Terragrunt unit.
 @test
-def prefrio-tf-plan-runs-all-units-with-saved-plans []: record -> nothing {
-    let fixture = $in
-    let result = run-tf $fixture plan
-
-    assert equal $result.exit_code 0 $result.stderr
-    let args = read-text $fixture.terragrunt_args | parse-json-list
-    let plan_dir = ($fixture | live-dir) | path join terragrunt.plan
-    assert equal $args [run --all --working-dir ($fixture | live-dir) --out-dir $plan_dir -- plan]
-}
-
-# Verify plan removes saved plans of units that no longer exist.
-@test
-def prefrio-tf-plan-clears-stale-plans []: record -> nothing {
-    let fixture = $in
-    let stale = ($fixture | live-dir) | path join terragrunt.plan removed-unit
-    try { mkdir $stale } catch {|err| test-error $err.msg }
-    let result = run-tf $fixture plan
-
-    assert equal $result.exit_code 0 $result.stderr
-    assert (not ($stale | path exists)) "A stale unit plan survived."
-}
-
-# Verify the Git repository root is the project root from a child directory.
-@test
-def prefrio-tf-plan-uses-git-root-from-a-child-directory []: record -> nothing {
-    let fixture = $in
-    let nested = $fixture.directory | path join live a modules service
-    try { mkdir $nested } catch {|err| test-error $err.msg }
-    let init = git init --quiet $fixture.directory | complete
-    assert equal $init.exit_code 0 $init.stderr
-    let result = run-tf-in {fixture: $fixture directory: $nested} plan
-
-    assert equal $result.exit_code 0 $result.stderr
-    let args = read-text $fixture.terragrunt_args | parse-json-list
-    assert (($fixture | live-dir) in $args)
-}
-
-# Verify the current directory is the root outside a Git repository.
-@test
-def prefrio-tf-plan-uses-current-directory-outside-git []: record -> nothing {
-    let fixture = $in
-    let result = run-tf $fixture plan
-
-    assert equal $result.exit_code 0 $result.stderr
-    let args = read-text $fixture.terragrunt_args | parse-json-list
-    assert (($fixture | live-dir) in $args)
-}
-
-# Verify apply refuses to run without saved plans.
-@test
-def prefrio-tf-apply-requires-saved-plans []: record -> nothing {
-    let fixture = $in
-    let result = run-tf $fixture apply
-
-    assert ($result.exit_code != 0)
-    assert ($result.stderr =~ "Terragrunt plan not found")
-    assert (not ($fixture.terragrunt_args | path exists))
-}
-
-# Verify apply uses saved plans and leaves the single confirmation to Terragrunt.
-@test
-def prefrio-tf-apply-uses-saved-plans-and-confirms []: record -> nothing {
-    let fixture = $in
-    let plan_dir = ($fixture | live-dir) | path join terragrunt.plan
-    try { mkdir $plan_dir } catch {|err| test-error $err.msg }
-    let result = run-tf $fixture apply
-
-    assert equal $result.exit_code 0 $result.stderr
-    let args = read-text $fixture.terragrunt_args | parse-json-list
-    assert equal $args [run --all --working-dir ($fixture | live-dir) --out-dir $plan_dir -- apply]
-}
-
-# Verify TF_AUTO_APPROVE skips the Terragrunt confirmation on apply.
-@test
-def prefrio-tf-apply-auto-approves-on-request []: record -> nothing {
-    let fixture = $in
-    try { mkdir (($fixture | live-dir) | path join terragrunt.plan) } catch {|err| test-error $err.msg }
-    let result = with-env {TF_AUTO_APPROVE: 1} {
-        run-tf $fixture apply
-    }
-
-    assert equal $result.exit_code 0 $result.stderr
-    let args = read-text $fixture.terragrunt_args | parse-json-list
-    assert ("--non-interactive" in $args)
-}
-
-# Verify init reconfigures every unit backend.
-@test
-def prefrio-tf-init-reconfigures-all-units []: record -> nothing {
+def prefrio-tf-init-runs-all-units []: record -> nothing {
     let fixture = $in
     let result = run-tf $fixture init
 
@@ -311,85 +231,208 @@ def prefrio-tf-init-reconfigures-all-units []: record -> nothing {
     assert equal $args [run --all --working-dir ($fixture | live-dir) -- init -reconfigure]
 }
 
-# Verify the removed --prod flag is rejected instead of ignored.
+# Verify --all plans every unit and writes a manifest.
 @test
-def prefrio-tf-plan-rejects-prod-flag []: record -> nothing {
+def prefrio-tf-plan-all-writes-manifest []: record -> nothing {
     let fixture = $in
-    let result = run-tf $fixture plan "--prod"
+    let result = run-tf $fixture plan "--all"
+
+    assert equal $result.exit_code 0 $result.stderr
+    let args = read-text $fixture.terragrunt_args | parse-json-list
+    let plan_dir = ($fixture | live-dir) | path join terragrunt.plan
+    assert equal $args [run --all --working-dir ($fixture | live-dir) --out-dir $plan_dir -- plan]
+    let manifest = open ($plan_dir | path join prefrio.nuon)
+    assert equal $manifest.scope all
+    assert equal $manifest.working_dir live
+}
+
+# Verify --all removes stale plans before planning.
+@test
+def prefrio-tf-plan-all-clears-stale-plans []: record -> nothing {
+    let fixture = $in
+    let stale = ($fixture | live-dir) | path join terragrunt.plan removed-unit
+    try { mkdir $stale } catch {|err| test-error $err.msg }
+    let result = run-tf $fixture plan "--all"
+
+    assert equal $result.exit_code 0 $result.stderr
+    assert (not ($stale | path exists)) "A stale unit plan survived."
+}
+
+# Verify Git root discovery from a child directory.
+@test
+def prefrio-tf-plan-all-uses-git-root-from-a-child-directory []: record -> nothing {
+    let fixture = $in
+    let nested = $fixture.directory | path join live a modules service
+    try { mkdir $nested } catch {|err| test-error $err.msg }
+    let init = git init --quiet $fixture.directory | complete
+    assert equal $init.exit_code 0 $init.stderr
+    let result = run-tf-in {fixture: $fixture directory: $nested} plan "--all"
+
+    assert equal $result.exit_code 0 $result.stderr
+    let args = read-text $fixture.terragrunt_args | parse-json-list
+    assert (($fixture | live-dir) in $args)
+}
+
+# Verify the current directory is the root outside a Git repository.
+@test
+def prefrio-tf-plan-all-uses-current-directory-outside-git []: record -> nothing {
+    let fixture = $in
+    let result = run-tf $fixture plan "--all"
+
+    assert equal $result.exit_code 0 $result.stderr
+    let args = read-text $fixture.terragrunt_args | parse-json-list
+    assert (($fixture | live-dir) in $args)
+}
+
+# Verify apply requires the all-module manifest.
+@test
+def prefrio-tf-apply-requires-manifest []: record -> nothing {
+    let fixture = $in
+    let result = run-tf $fixture apply
 
     assert ($result.exit_code != 0)
-    assert ($result.stderr =~ "unknown_flag")
+    assert ($result.stderr =~ "Plan manifest not found")
     assert (not ($fixture.terragrunt_args | path exists))
 }
 
-# Verify edit-vars opens the only variables file without a prompt.
+# Verify apply consumes the all-module manifest without selectors.
 @test
-def prefrio-tf-edit-vars-picks-the-only-file []: record -> nothing {
+def prefrio-tf-apply-uses-all-manifest []: record -> nothing {
     let fixture = $in
-    let result = run-tf $fixture edit-vars
+    let plan_dir = ($fixture | live-dir) | path join terragrunt.plan
+    try { mkdir $plan_dir } catch {|err| test-error $err.msg }
+    write-file ({scope: all working_dir: live plan_dir: live/terragrunt.plan} | to nuon) ($plan_dir | path join prefrio.nuon)
+    let result = run-tf $fixture apply
 
     assert equal $result.exit_code 0 $result.stderr
-    let args = read-text $fixture.sops_args | parse-json-list
-    assert equal $args [edit ($fixture.directory | path join live a terraform.tfvars.sops.json)]
+    let args = read-text $fixture.terragrunt_args | parse-json-list
+    assert equal $args [run --all --working-dir ($fixture | live-dir) --out-dir $plan_dir -- apply]
 }
 
-# Verify edit-vars opens an explicit file even when several candidates exist.
+# Verify TF_AUTO_APPROVE skips the all-module confirmation.
 @test
-def prefrio-tf-edit-vars-accepts-explicit-file []: record -> nothing {
+def prefrio-tf-apply-auto-approves []: record -> nothing {
     let fixture = $in
-    let explicit = $fixture.directory | path join live b terraform.tfvars.sops.json
-    write-file "{}" $explicit
-    let result = run-tf $fixture edit-vars $explicit
+    let plan_dir = ($fixture | live-dir) | path join terragrunt.plan
+    try { mkdir $plan_dir } catch {|err| test-error $err.msg }
+    write-file ({scope: all working_dir: live plan_dir: live/terragrunt.plan} | to nuon) ($plan_dir | path join prefrio.nuon)
+    let result = with-env {TF_AUTO_APPROVE: 1} { run-tf $fixture apply }
 
     assert equal $result.exit_code 0 $result.stderr
-    let args = read-text $fixture.sops_args | parse-json-list
-    assert equal $args [edit $explicit]
+    let args = read-text $fixture.terragrunt_args | parse-json-list
+    assert ("--non-interactive" in $args)
 }
 
-# Verify edit-vars explains how to proceed when the fuzzy finder is unavailable.
+# Verify the default plan picks the only unit without a picker.
 @test
-def prefrio-tf-edit-vars-requires-skim-for-several-files []: record -> nothing {
+def prefrio-tf-plan-single-unit []: record -> nothing {
     let fixture = $in
-    write-file "{}" ($fixture.directory | path join live b terraform.tfvars.sops.json)
-    let result = run-tf $fixture edit-vars
+    try { rm --recursive --force (($fixture | live-dir) | path join b) } catch {|err| test-error $err.msg }
+    let result = run-tf $fixture plan
+
+    assert equal $result.exit_code 0 $result.stderr
+    let args = read-text $fixture.terragrunt_args | parse-json-list
+    let unit_dir = ($fixture | live-dir) | path join a
+    let plan_file = ($fixture | live-dir) | path join terragrunt.plan a.tfplan
+    let manifest = open (($fixture | live-dir) | path join terragrunt.plan prefrio.nuon)
+    assert equal $args [run --working-dir $unit_dir -- plan $"-out=($plan_file)"]
+    assert equal $manifest.scope unit
+    assert equal $manifest.unit a
+}
+
+# Verify --mod selects one module and writes its plan.
+@test
+def prefrio-tf-plan-unit-selects-module []: record -> nothing {
+    let fixture = $in
+    let result = run-tf $fixture plan "--mod" b
+
+    assert equal $result.exit_code 0 $result.stderr
+    let args = read-text $fixture.terragrunt_args | parse-json-list
+    let unit_dir = ($fixture | live-dir) | path join b
+    let plan_file = ($fixture | live-dir) | path join terragrunt.plan b.tfplan
+    assert equal $args [run --working-dir $unit_dir -- plan $"-out=($plan_file)"]
+}
+
+# Verify --mod reports unknown modules.
+@test
+def prefrio-tf-plan-unit-reports-unknown-module []: record -> nothing {
+    let fixture = $in
+    let result = run-tf $fixture plan "--mod" nope
+
+    assert ($result.exit_code != 0)
+    assert ($result.stderr =~ "is not a unit under")
+    assert ($result.stderr =~ "Available: a, b")
+    assert (not ($fixture.terragrunt_args | path exists))
+}
+
+# Verify the default picker path fails clearly without skim or a terminal.
+@test
+def prefrio-tf-plan-default-requires-selection []: record -> nothing {
+    let fixture = $in
+    let result = run-tf $fixture plan
 
     assert ($result.exit_code != 0)
     assert ($result.stderr =~ "skim plugin is not loaded")
-    assert (not ($fixture.sops_args | path exists))
+    assert ($result.stderr =~ "--all")
+    assert (not ($fixture.terragrunt_args | path exists))
 }
 
-# Verify edit-vars fails when the project has no variables file.
+# Verify --all and --mod cannot be combined.
 @test
-def prefrio-tf-edit-vars-fails-without-files []: record -> nothing {
+def prefrio-tf-plan-rejects-all-with-unit []: record -> nothing {
     let fixture = $in
-    try { rm --force ($fixture.directory | path join live a terraform.tfvars.sops.json) } catch {|err| test-error $err.msg }
-    let result = run-tf $fixture edit-vars
+    let result = run-tf $fixture plan "--all" "--mod" a
 
     assert ($result.exit_code != 0)
-    assert ($result.stderr =~ "No \\*.tfvars.sops.json files found")
+    assert ($result.stderr =~ "Use either --all or --mod")
 }
 
-# Verify edit-vars accepts SOPS no-change status.
+# Verify apply requires the selected unit's manifest.
 @test
-def prefrio-tf-edit-vars-accepts-no-change-status []: record -> nothing {
+def prefrio-tf-apply-unit-requires-manifest []: record -> nothing {
     let fixture = $in
-    let result = with-env {SOPS_EDIT_EXIT_CODE: "200"} {
-        run-tf $fixture edit-vars
-    }
+    let result = run-tf $fixture apply
+
+    assert ($result.exit_code != 0)
+    assert ($result.stderr =~ "Plan manifest not found")
+    assert (not ($fixture.terragrunt_args | path exists))
+}
+
+# Verify apply consumes a unit manifest without selectors.
+@test
+def prefrio-tf-apply-unit-uses-manifest []: record -> nothing {
+    let fixture = $in
+    let plan_dir = ($fixture | live-dir) | path join terragrunt.plan
+    let plan_file = $plan_dir | path join a.tfplan
+    try { mkdir $plan_dir; write-file "" $plan_file } catch {|err| test-error $err.msg }
+    write-file ({scope: unit working_dir: live unit: a plan: live/terragrunt.plan/a.tfplan} | to nuon) ($plan_dir | path join prefrio.nuon)
+    let result = run-tf $fixture apply
 
     assert equal $result.exit_code 0 $result.stderr
+    let args = read-text $fixture.terragrunt_args | parse-json-list
+    assert equal $args [run --working-dir (($fixture | live-dir) | path join a) -- apply $plan_file]
 }
 
-# Verify edit-vars still fails for SOPS errors.
+# Verify init has no module selector and initializes all units.
 @test
-def prefrio-tf-edit-vars-rejects-error-status []: record -> nothing {
+def prefrio-tf-init-rejects-module-selector []: record -> nothing {
     let fixture = $in
-    let result = with-env {SOPS_EDIT_EXIT_CODE: "1"} {
-        run-tf $fixture edit-vars
-    }
+    let result = run-tf $fixture init "--mod" a
 
     assert ($result.exit_code != 0)
-    assert ($result.stderr =~ "exit 1")
+    assert ($result.stderr =~ "doesn't have flag")
+}
+
+# Verify --help exposes the new scope flags.
+@test
+def prefrio-tf-plan-help-shows-scope-flags []: record -> nothing {
+    let fixture = $in
+    let result = run-tf $fixture plan "--help"
+
+    assert equal $result.exit_code 0 $result.stderr
+    assert ($result.stdout =~ "--all")
+    assert ($result.stdout =~ "--mod")
+    assert (not ($fixture.terragrunt_args | path exists))
 }
 
 # Verify the auth command runs the full gcloud login sequence.
@@ -505,61 +548,6 @@ def prefrio-k-uses-kube-host-when-set []: record -> nothing {
     assert equal $result.exit_code 0 $result.stderr
     let kubectl = read-text $fixture.kubectl_args | parse-json
     assert equal ($kubectl.args | first 2) [--server https://k3s.example.test]
-}
-
-# Verify tf commands refuse to run without TG_WORKING_DIR.
-@test
-def prefrio-tf-plan-requires-working-directory []: record -> nothing {
-    let fixture = $in
-    let result = run-tf-in {
-        fixture: $fixture
-        directory: $fixture.directory
-        env: {TG_WORKING_DIR: ""}
-    } plan
-
-    assert ($result.exit_code != 0)
-    assert ($result.stderr =~ "Set TG_WORKING_DIR")
-    assert (not ($fixture.terragrunt_args | path exists))
-}
-
-# Verify tf commands refuse a TG_WORKING_DIR that does not exist.
-@test
-def prefrio-tf-plan-rejects-missing-working-directory []: record -> nothing {
-    let fixture = $in
-    let result = run-tf-in {
-        fixture: $fixture
-        directory: $fixture.directory
-        env: {TG_WORKING_DIR: missing}
-    } plan
-
-    assert ($result.exit_code != 0)
-    assert ($result.stderr =~ "TG_WORKING_DIR does not exist")
-    assert (not ($fixture.terragrunt_args | path exists))
-}
-
-# Verify an absolute TG_WORKING_DIR selects a narrower set of units and keeps plans there.
-@test
-def prefrio-tf-plan-uses-absolute-working-directory []: record -> nothing {
-    let fixture = $in
-    let unit = ($fixture | live-dir) | path join a
-    let result = run-tf-in {
-        fixture: $fixture
-        directory: $fixture.directory
-        env: {TG_WORKING_DIR: $unit}
-    } plan
-
-    assert equal $result.exit_code 0 $result.stderr
-    let args = read-text $fixture.terragrunt_args | parse-json-list
-    assert equal $args [
-        run
-        --all
-        --working-dir
-        $unit
-        --out-dir
-        ($unit | path join terragrunt.plan)
-        --
-        plan
-    ]
 }
 
 # Verify run-command shows child output while the child still runs.
