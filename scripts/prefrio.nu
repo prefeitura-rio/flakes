@@ -1,25 +1,35 @@
 use std/log
 use ./tf.nu *
-use ./lib.nu [run-command fail]
+use ./lib.nu [run-command fail read-project select-environment]
 
 const QUOTA_PROJECT = "rj-iplanrio-dia"
 const K3S_API = "https://tailscale-operator-onprem.squirrel-regulus.ts.net"
 
-# Fetch GKE credentials for CLOUDSDK_CONTAINER_CLUSTER. Project and region come from CLOUDSDK_CORE_PROJECT and CLOUDSDK_COMPUTE_REGION.
-export def --wrapped "main get-kubeconfig" [...extra: string]: nothing -> nothing {
-    let cluster = $env.CLOUDSDK_CONTAINER_CLUSTER? | default null
+# Fetch GKE credentials for a cluster of the current project, as described by its .project.nuon.
+export def --wrapped "main get-kubeconfig" [
+    --environment(-e): string # environment name; optional when the project has only one
+    ...extra: string
+]: nothing -> nothing {
+    let project = read-project
+    let selected = select-environment $project ($environment | default null)
+    let cluster = $selected.cluster? | default null
     if $cluster == null or $cluster == "" {
-        fail "Set CLOUDSDK_CONTAINER_CLUSTER to the cluster name." {
+        fail $"The selected environment of ($project.name) has no cluster in .project.nuon." {
             command: get-kubeconfig
-            span: (metadata $cluster).span
+            span: (metadata $selected).span
         }
     }
+    let region = $selected.region?
+    let location = if $region == null or $region == "" { [] } else { [--location $region] }
 
     run-command gcloud ...[
         container
         clusters
         get-credentials
         $cluster
+        --project
+        $selected.project
+        ...$location
         ...$extra
     ]
     | ignore

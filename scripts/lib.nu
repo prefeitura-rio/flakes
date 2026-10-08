@@ -34,3 +34,73 @@ export def run-command [
     }
     {exit_code: $exit_code}
 }
+
+const PROJECT_FILE = ".project.nuon"
+
+# Find the nearest directory, from the current one upwards, that holds .project.nuon.
+export def find-project-dir []: nothing -> oneof<path, nothing> {
+    mut dir = pwd | path expand
+    loop {
+        if (is-file ($dir | path join $PROJECT_FILE)) { return $dir }
+        let parent = $dir | path dirname
+        if $parent == $dir { return null }
+        $dir = $parent
+    }
+}
+
+# Return the project root: the directory with .project.nuon, else the Git root, else the current directory.
+export def project-root []: nothing -> path {
+    let project = find-project-dir
+    if $project != null { return $project }
+    let result = do { git rev-parse --show-toplevel } | complete
+    if $result.exit_code == 0 { $result.stdout | str trim } else { pwd | path expand }
+}
+
+# Read the .project.nuon of the current project.
+export def read-project []: nothing -> record {
+    let dir = find-project-dir
+    if $dir == null {
+        fail $"No ($PROJECT_FILE) found in (pwd) or any parent directory." {
+            command: project
+            span: (metadata $dir).span
+        }
+    }
+    let path = $dir | path join $PROJECT_FILE
+    let project = try { open $path } catch {|err|
+        fail $"Could not read ($path): ($err.msg)" {command: project span: (metadata $path).span}
+    }
+    let name = if ($project | describe | str starts-with record) { $project.name? } else { null }
+    if $name == null or $name == "" {
+        fail $"($path) must be a record with a name." {command: project span: (metadata $path).span}
+    }
+    $project
+}
+
+# Choose one environment of a project: the named one, or the only one. Fail when the choice is ambiguous.
+export def select-environment [project: record, name: oneof<string, nothing>]: nothing -> record {
+    let environments = $project.env? | default {}
+    if ($environments | is-empty) {
+        fail $"Project ($project.name) has no env record in ($PROJECT_FILE)." {
+            command: environment
+            span: (metadata $project).span
+        }
+    }
+    let available = $environments | columns
+    let chosen = if $name != null {
+        $name
+    } else if ($available | length) == 1 {
+        $available | first
+    } else {
+        fail $"Project ($project.name) has several environments. Pass --environment: ($available | str join ', ')." {
+            command: environment
+            span: (metadata $project).span
+        }
+    }
+    if $chosen not-in $available {
+        fail $"Project ($project.name) has no environment ($chosen). Available: ($available | str join ', ')." {
+            command: environment
+            span: (metadata $chosen).span
+        }
+    }
+    $environments | get --optional $chosen
+}

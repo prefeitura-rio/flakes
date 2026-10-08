@@ -4,11 +4,12 @@ Shared Nix packages for Prefeitura do Rio infrastructure projects.
 
 ## prefrio
 
-A Nushell CLI for Terragrunt, SOPS and Kubernetes. All Terraform units live below `live/`.
+A Nushell CLI for Terragrunt, SOPS and Kubernetes. A project is a directory with a `.project.nuon`; all its Terraform units live below `live/` in that directory.
 
 ```nu
 prefrio auth                    # Google Cloud login
-prefrio get-kubeconfig          # gcloud container clusters get-credentials
+prefrio get-kubeconfig          # gcloud container clusters get-credentials, from .project.nuon
+prefrio get-kubeconfig -e prod  # choose an environment when the project has several
 prefrio k get pods -n gitlab    # kubectl through the Tailscale K3s API
 prefrio tf init                 # initialize every unit
 prefrio tf plan                 # choose one unit with a small fuzzy finder
@@ -18,13 +19,31 @@ prefrio tf apply                # apply the last generated plan
 prefrio tf edit-vars [file]
 ```
 
+### Project file
+
+`prefrio` finds the project by walking up from the current directory to the first `.project.nuon`. Without one it falls back to the Git root, then to the current directory. This lets several projects share one Git repository.
+
+```nuon
+{
+  name: superapp
+  env: {
+    stg: {project: rj-superapp-staging, region: us-central1, cluster: application}
+    prod: {project: rj-superapp, region: us-central1, cluster: application}
+  }
+}
+```
+
+`env` is optional. Use the key `default` for a project with a single environment, and `stg` and `prod` to match the unit directories under `live/`. `region` and `cluster` are optional too, but `get-kubeconfig` needs a cluster. `get-kubeconfig` uses the only environment, or the one named by `--environment`/`-e`; with several environments it refuses to guess. Extra flags go to `gcloud`.
+
 ### Modules and plans
 
 `prefrio tf init` always initializes every unit below `live/`. `tf plan` selects one unit by default, with `-m`/`--mod` for scripts and `--all` for every unit. The picker uses `PREFRIO_SKIM_HEIGHT` and defaults to `40%`.
 
-A single-unit plan is saved as `live/terragrunt.plan/<module>.tfplan`. An all-unit plan uses Terragrunt's directory layout in `live/terragrunt.plan/`. Both write `live/terragrunt.plan/prefrio.nuon`.
+`tf plan` removes the saved plans, then runs `terragrunt run --all --out-dir live/terragrunt.plan -- plan`. With `-m` it adds `--filter ./<unit>` so only that unit is planned. Terragrunt writes one `tfplan.tfplan` per unit, in a folder named after the unit (for example `live/terragrunt.plan/stg/gcp/tfplan.tfplan`). Add `terragrunt.plan/` to `.gitignore`: plans can hold sensitive values.
 
-`prefrio tf apply` takes no selector. It reads the manifest and applies exactly the last successful plan. It fails when the manifest or its plan is missing. `TF_AUTO_APPROVE` skips the apply confirmation.
+`tf apply` takes no selector. The plan directory records what was planned, so it applies exactly the units that have a `tfplan.tfplan`, with one `--filter` per unit, and removes the directory once the apply succeeds. Terragrunt orders the units from their `dependency` blocks and asks for confirmation; `TF_AUTO_APPROVE` makes the run non-interactive.
+
+A saved plan is computed with the outputs its dependencies had at plan time. When an upstream unit changes outputs, apply that unit first and plan the downstream one again.
 
 `tf edit-vars` runs `sops edit`. Pass a file path to choose it directly; without a path it uses the compact fuzzy finder.
 
