@@ -25,29 +25,25 @@ def unit-names [units_dir: path]: nothing -> list<string> {
     | sort
 }
 
-# Keep the units that have the environment as one of their path segments.
+# Keep the units of an environment. A unit is <module>/<environment>, so the environment is the second folder.
 def units-of-environment [units: list<string>, environment: oneof<string, nothing>]: nothing -> list<string> {
     if $environment == null { return $units }
-    $units | where {|name| $environment in ($name | path split) }
-}
-
-# Return one --filter per unit of the environment, or no filter without an environment.
-def environment-filters [units_dir: path, environment: oneof<string, nothing>]: nothing -> list<string> {
-    if $environment == null { return [] }
-    let units = units-of-environment (unit-names $units_dir) $environment
-    if ($units | is-empty) {
-        fail $"No unit belongs to the ($environment) environment under ($units_dir)." {
-            command: terragrunt
-            span: (metadata $units_dir).span
-        }
+    $units | where {|name|
+        let parts = $name | path split
+        ($parts | length) == 2 and $parts.1? == $environment
     }
-    $units | each {|unit| [--filter $"./($unit)"] } | flatten
 }
 
-# Choose one unit: the --mod value, the only unit present, or a picker. An environment limits the choice.
-def select-unit [units_dir: path, selection: record]: nothing -> string {
-    let unit = $selection.unit
+# Keep the units that are the module itself or sit inside the module folder.
+def units-of-module [units: list<string>, module: oneof<string, nothing>]: nothing -> list<string> {
+    if $module == null { return $units }
+    $units | where {|name| $name == $module or ($name | path split | first) == $module }
+}
+
+# List the units that match the environment and module selectors, failing when none do.
+def candidate-units [units_dir: path, selection: record]: nothing -> list<string> {
     let environment = $selection.environment
+    let module = $selection.module
     let all_units = unit-names $units_dir
     if ($all_units | is-empty) {
         fail $"No terragrunt.hcl found under ($units_dir)." {
@@ -56,31 +52,34 @@ def select-unit [units_dir: path, selection: record]: nothing -> string {
         }
     }
 
-    let units = units-of-environment $all_units $environment
-    if ($units | is-empty) {
+    let in_environment = units-of-environment $all_units $environment
+    if ($in_environment | is-empty) {
         fail $"No unit belongs to the ($environment) environment under ($units_dir)." {
             command: terragrunt
             span: (metadata $units_dir).span
         }
     }
 
-    if $unit != null {
-        if $unit not-in $units {
-            let scope = if $environment == null { $"under ($units_dir)" } else { $"in the ($environment) environment" }
-            fail $"($unit) is not a unit ($scope). Available: ($units | str join ', ')." {
-                command: terragrunt
-                span: (metadata $unit).span
-            }
+    let matching = units-of-module $in_environment $module
+    if ($matching | is-empty) {
+        let scope = if $environment == null { $"under ($units_dir)" } else { $"in the ($environment) environment" }
+        fail $"($module) is not a unit or module ($scope). Available: ($in_environment | str join ', ')." {
+            command: terragrunt
+            span: (metadata $units_dir).span
         }
-        return $unit
     }
+    $matching
+}
 
+# Pick one of the candidate units: the only one, or the choice made in a picker.
+def pick-unit [units_dir: path]: list<string> -> string {
+    let units = $in
     if ($units | length) == 1 {
         return ($units | first)
     }
 
     if (scope commands | where name == sk | is-empty) {
-        fail "The skim plugin is not loaded. Pass --all or --mod NAME." {
+        fail "The skim plugin is not loaded. Pass --all or --module NAME." {
             command: terragrunt
             span: (metadata $units_dir).span
         }
@@ -93,7 +92,7 @@ def select-unit [units_dir: path, selection: record]: nothing -> string {
     }
 
     if $choice == null or $choice == "" {
-        fail "No unit selected. Pass --all or --mod NAME." {
+        fail "No unit selected. Pass --all or --module NAME." {
             command: terragrunt
             span: (metadata $units_dir).span
         }
@@ -110,14 +109,13 @@ def clear-plans [plans: path]: nothing -> nothing {
 }
 
 # Initialize every unit.
-def run-init [environment: oneof<string, nothing>, ...extra: string]: nothing -> nothing {
+def run-init [...extra: string]: nothing -> nothing {
     let units_dir = units-root (project-root)
     run-command terragrunt ...[
         run
         --all
         --working-dir
         $units_dir
-        ...(environment-filters $units_dir $environment)
         --
         init
         -reconfigure
@@ -128,16 +126,12 @@ def run-init [environment: oneof<string, nothing>, ...extra: string]: nothing ->
 
 # Plan the chosen units with Terragrunt, saving the plans in the plan directory.
 def run-plan [selection: record, ...extra: string]: nothing -> nothing {
-    if $selection.all and $selection.unit != null {
-        fail "Use either --all or --mod, not both." {
-            command: plan
-            span: (metadata $selection).span
-        }
-    }
-
     let units_dir = units-root (project-root)
     let plans = $units_dir | path join $PLAN_DIR
-    let filters = if $selection.all { environment-filters $units_dir $selection.environment } else { [--filter $"./(select-unit $units_dir $selection)"] }
+    let candidates = candidate-units $units_dir $selection
+    let narrowed = $selection.module != null or $selection.environment != null
+    let chosen = if $selection.all { $candidates } else { [($candidates | pick-unit $units_dir)] }
+    let filters = if $selection.all and not $narrowed { [] } else { $chosen | each {|unit| [--filter $"./($unit)"] } | flatten }
 
     clear-plans $plans
     run-command terragrunt ...[
@@ -218,18 +212,16 @@ def choose-tfvars-file [root: path]: nothing -> oneof<string, nothing> {
     }
 }
 
-# Initialize every Terragrunt unit, or only the units of one environment with --environment.
-export def "main tf init" [--environment(-e): string, ...extra: string]: nothing -> nothing {
-    let scope = if $environment == null { null } else { $environment | str trim }
-
-    run-init $scope ...$extra
+# Initialize every Terragrunt unit.
+export def "main tf init" [...extra: string]: nothing -> nothing {
+    run-init ...$extra
 }
 
-# Plan one unit by default, or every unit with --all. --environment limits both to one environment (for example stg or prod). Plans are saved in units/terragrunt.plan.
-export def "main tf plan" [--all, --mod(-m): string, --environment(-e): string, ...extra: string]: nothing -> nothing {
+# Plan one unit by default, or every unit with --all. --module and --environment narrow the units (--module gcp --environment stg is gcp/stg), and --all takes every unit left. Plans are saved in units/terragrunt.plan.
+export def "main tf plan" [--all(-a), --module(-m): string, --environment(-e): string, ...extra: string]: nothing -> nothing {
     let selection = {
         all: $all
-        unit: (if $mod == null { null } else { $mod | str trim })
+        module: (if $module == null { null } else { $module | str trim })
         environment: (if $environment == null { null } else { $environment | str trim })
     }
 

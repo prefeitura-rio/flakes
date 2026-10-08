@@ -12,12 +12,11 @@ prefrio get-kubeconfig          # gcloud container clusters get-credentials, fro
 prefrio get-kubeconfig -e prod  # choose an environment when the project has several
 prefrio k get pods -n gitlab    # kubectl through the Tailscale K3s API
 prefrio tf init                 # initialize every unit
-prefrio tf init -e prod         # initialize only the prod units
 prefrio tf plan                 # choose one unit with a small fuzzy finder
-prefrio tf plan -m k8s/stg      # choose one unit by name
-prefrio tf plan --all           # plan every unit
-prefrio tf plan --all -e stg    # plan every staging unit
-prefrio tf plan -e prod         # choose one prod unit with the fuzzy finder
+prefrio tf plan -m gcp -e stg   # one unit: the gcp module in stg
+prefrio tf plan -m gcp -a       # the gcp module in every environment
+prefrio tf plan -a -e stg       # every staging unit
+prefrio tf plan -a              # every unit
 prefrio tf apply                # apply the last generated plan
 prefrio tf edit-vars [file]
 ```
@@ -36,15 +35,23 @@ prefrio tf edit-vars [file]
 }
 ```
 
-`env` is optional. Use the key `default` for a project with a single environment, and `stg` and `prod` to match the environment folder in the unit paths under `units/` (`units/gcp/stg` or `units/stg/gcp`). `region` and `cluster` are optional too, but `get-kubeconfig` needs a cluster. `get-kubeconfig` uses the only environment, or the one named by `--environment`/`-e`; with several environments it refuses to guess. Extra flags go to `gcloud`.
+`env` is optional. Use the key `default` for a project with a single environment, and `stg` and `prod` to match the environment folder in the unit paths under `units/` (`units/gcp/stg`). `region` and `cluster` are optional too, but `get-kubeconfig` needs a cluster. `get-kubeconfig` uses the only environment, or the one named by `--environment`/`-e`; with several environments it refuses to guess. Extra flags go to `gcloud`.
 
 ### Modules and plans
 
-`prefrio tf init` initializes every unit below `units/`. `tf plan` selects one unit by default, with `-m`/`--mod` for scripts and `--all` for every unit. `--environment`/`-e` (on `init` and `plan`) limits the units to those with that name as a folder in their path, such as `stg` or `prod`, whatever the layout. With `--all` it plans every unit of the environment, and with the picker or `-m` it only offers units of that environment. The picker uses `PREFRIO_SKIM_HEIGHT` and defaults to `40%`.
+`prefrio tf init` initializes every unit below `units/`. It takes no selector: Terragrunt also initializes a unit when it plans or applies it.
 
-`tf plan` removes the saved plans, then runs `terragrunt run --all --out-dir units/terragrunt.plan -- plan`. With `-m` it adds `--filter ./<unit>` so only that unit is planned, and with `-e` it adds one `--filter` for each unit of the environment. Terragrunt writes one `tfplan.tfplan` per unit, in a folder named after the unit (for example `units/terragrunt.plan/gcp/stg/tfplan.tfplan`). Add `terragrunt.plan/` to `.gitignore`: plans can hold sensitive values.
+`tf plan` has two selectors that narrow the units and one switch:
 
-`tf apply` takes no selector. The plan directory records what was planned, so it applies exactly the units that have a `tfplan.tfplan`, with one `--filter` per unit, and removes the directory once the apply succeeds. It logs `Applying: <units>` before it starts. To apply one environment, plan only that environment (`tf plan --all -e stg`) and then run `tf apply`: only the planned units can be applied. Planning clears earlier plans, so staging and prod are never applied together by accident. Terragrunt orders the units from their `dependency` blocks and asks for confirmation; `TF_AUTO_APPROVE` makes the run non-interactive.
+- `-m`/`--module NAME` keeps the units whose path is `NAME` or sits inside the `NAME` folder (`gcp` matches `gcp/stg` and `gcp/prod`; `gcp/stg` matches one unit).
+- `-e`/`--environment NAME` keeps the units whose environment folder is `NAME`. A unit is `units/<module>/<environment>`, so the environment is the second folder (`stg` or `prod`). A module name such as `gcp` is not an environment, and a project whose units have no environment folder has none.
+- `-a`/`--all` plans every unit left. Without it, `plan` takes the only unit left, or opens the picker when several remain.
+
+The selectors combine: `-m gcp -e stg` is the unit `gcp/stg`, and `-m gcp -a` is the gcp module in every environment. The picker uses `PREFRIO_SKIM_HEIGHT` and defaults to `40%`.
+
+`tf plan` removes the saved plans, then runs `terragrunt run --all --out-dir units/terragrunt.plan -- plan`. When any selector is used it adds one `--filter ./<unit>` for each unit it plans. Terragrunt writes one `tfplan.tfplan` per unit, in a folder named after the unit (for example `units/terragrunt.plan/gcp/stg/tfplan.tfplan`). Add `terragrunt.plan/` to `.gitignore`: plans can hold sensitive values.
+
+`tf apply` takes no selector. The plan directory records what was planned, so it applies exactly the units that have a `tfplan.tfplan`, with one `--filter` per unit, and removes the directory once the apply succeeds. It logs `Applying: <units>` before it starts. To apply one environment, plan only that environment (`tf plan -a -e stg`) and then run `tf apply`: only the planned units can be applied. Planning clears earlier plans, so staging and prod are never applied together by accident. Terragrunt orders the units from their `dependency` blocks and asks for confirmation; `TF_AUTO_APPROVE` makes the run non-interactive.
 
 A saved plan is computed with the outputs its dependencies had at plan time. When an upstream unit changes outputs, apply that unit first and plan the downstream one again.
 
