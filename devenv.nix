@@ -11,7 +11,7 @@
   ];
 
   scripts.run-tests.exec = ''
-    nu -c 'use nutest; nutest run-tests --path prefrio/tests --fail'
+    nu -c 'use nutest; nutest run-tests --path pkgs/prefrio/tests --fail'
   '';
 
   git-hooks.hooks.nixfmt.enable = true;

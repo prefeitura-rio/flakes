@@ -16,11 +16,11 @@
     in
     {
       packages = forEachSystem (system: {
-        prefrio = import ./prefrio/pkg.nix { pkgs = nixpkgs.legacyPackages.${system}; };
+        prefrio = import ./pkgs/prefrio { pkgs = nixpkgs.legacyPackages.${system}; };
       });
 
       overlays.default = final: _prev: {
-        prefrio = import ./prefrio/pkg.nix { pkgs = final; };
+        prefrio = import ./pkgs/prefrio { pkgs = final; };
       };
     };
 }
