@@ -20,9 +20,9 @@ imports:
   - prefrio/devenv/infra.nix
 ```
 
-| Profile                   | Description                                                                |
-| ------------------------- | -------------------------------------------------------------------------- |
-| [infra](devenv/infra.nix) | prefrio, the shared Terragrunt root (`TF_LIB`) and the Terraform git hooks |
+| Profile                   | Description                                                                                                     |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| [infra](devenv/infra.nix) | prefrio, `TF_LIB` with the shared Terragrunt root and the tflint and tfsec configs, and the Terraform git hooks |
 
 A profile can use only the inputs that every project declares: `nixpkgs`, `git-hooks` and `prefrio`.
 
@@ -34,7 +34,8 @@ devenv/
 └── files/
     └── infra/
         ├── root.hcl
-        └── tflint.hcl
+        ├── tflint.hcl
+        └── tfsec.yml
 ```
 
 ```nix
@@ -53,6 +54,8 @@ include "root" {
 ```
 
 The root finds the project through its `.project.json`, which must define `state_prefix`. Units live in `units/<module>` for a project with one environment, and in `units/<module>/<environment>` otherwise.
+
+`tflint.hcl` and `tfsec.yml` are the only tflint and tfsec configs. `prefrio tf scan` passes `tfsec.yml` to tfsec, so an exclusion applies to every project and a project does not carry its own `.tfsec/config.yml`.
 
 ## Development
 
