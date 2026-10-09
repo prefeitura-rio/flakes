@@ -37,9 +37,9 @@ export def run-command [
 
 const PROJECT_FILE = ".project.json"
 
-# Find the nearest directory, from the current one upwards, that holds .project.json.
-export def find-project-dir []: nothing -> oneof<path, nothing> {
-    mut dir = pwd | path expand
+# Find the nearest directory that holds .project.json, from a directory upwards (the current one by default).
+export def find-project-dir [from?: path]: nothing -> oneof<path, nothing> {
+    mut dir = $from | default (pwd) | path expand
     loop {
         if (is-file ($dir | path join $PROJECT_FILE)) { return $dir }
         let parent = $dir | path dirname
