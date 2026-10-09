@@ -21,16 +21,16 @@
           final.terragrunt
         ];
 
-        skim = "${final.nushellPlugins.skim}/bin/nu_plugin_skim";
+        nushell = final.nushell.withPlugins [ final.nushellPlugins.skim ];
 
         cli = final.writeShellApplication {
           name = "prefrio";
           text = ''
-            exec ${final.nushell}/bin/nu --plugins '[${skim}]' ${scripts}/prefrio "$@"
+            exec ${nushell}/bin/nu ${scripts}/prefrio "$@"
           '';
           runtimeInputs = tools ++ [
             final.git
-            final.nushell
+            nushell
           ];
         };
       in
