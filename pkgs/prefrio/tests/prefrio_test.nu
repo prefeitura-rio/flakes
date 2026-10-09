@@ -79,6 +79,7 @@ def make-fixture []: nothing -> record {
     }
 }
 
+# Write a fake sops executable that records its arguments.
 def write-fake-sops [path: path]: nothing -> nothing {
     write-file "#!/usr/bin/env -S nu
 def --wrapped main [...args: string] {
@@ -998,7 +999,7 @@ def tfsec-call [project: string]: nothing -> list<string> {
     [--no-color --concise-output --ignore-hcl-errors $project]
 }
 
-# Verify scan runs tfsec once for each project that owns a file, in the order the projects first appear.
+# Verify scan runs tfsec once per project, in the order the projects first appear.
 @test
 def prefrio-tf-scan-scans-each-project-once []: record -> nothing {
     let fixture = $in

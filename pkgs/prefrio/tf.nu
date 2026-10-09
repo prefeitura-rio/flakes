@@ -25,7 +25,7 @@ def unit-names [units_dir: path]: nothing -> list<string> {
     | sort
 }
 
-# List the units that match the environment and module selectors, failing when none do.
+# List the <module>/<environment> units that match the selectors, failing when none do.
 def candidate-units [units_dir: path, selection: record]: nothing -> list<string> {
     let environment = $selection.environment
     let module = $selection.module
@@ -37,7 +37,6 @@ def candidate-units [units_dir: path, selection: record]: nothing -> list<string
         }
     }
 
-    # A unit is <module>/<environment>, so the environment is the second folder.
     let in_environment = if $environment == null { $all_units } else {
         $all_units | where {
             let parts = $in | path split
@@ -51,7 +50,6 @@ def candidate-units [units_dir: path, selection: record]: nothing -> list<string
         }
     }
 
-    # Keep the units that are the module itself or sit inside the module folder.
     let matching = if $module == null { $in_environment } else {
         $in_environment | where $it == $module or ($it | path split | first) == $module
     }
@@ -65,7 +63,7 @@ def candidate-units [units_dir: path, selection: record]: nothing -> list<string
     $matching
 }
 
-# Choose one item with the skim picker. Return null when nothing is chosen, and fail when the plugin is missing.
+# Pick one item with skim; null when nothing is chosen, fail when the plugin is missing.
 def pick-one [prompt: string, missing_plugin_hint: string]: list<string> -> oneof<string, nothing> {
     let items = $in
     if (scope commands | where name == sk | is-empty) {
@@ -145,7 +143,7 @@ def run-plan [selection: record, ...extra: string]: nothing -> nothing {
     log info "Terragrunt plan completed"
 }
 
-# Check the inputs of the chosen units, then validate them with OpenTofu. Without selectors every unit is checked.
+# Check the inputs, then validate the chosen units with OpenTofu.
 def run-validate [selection: record]: nothing -> nothing {
     let units_dir = units-root (project-root)
     let candidates = candidate-units $units_dir $selection
@@ -175,7 +173,7 @@ def run-validate [selection: record]: nothing -> nothing {
     log info "Terragrunt validate completed"
 }
 
-# Apply the units that have a saved plan. The plan directory records what was planned.
+# Apply the units that have a saved plan.
 def run-apply []: nothing -> nothing {
     let units_dir = units-root (project-root)
     let plans = $units_dir | path join $PLAN_DIR

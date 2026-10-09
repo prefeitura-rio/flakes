@@ -16,7 +16,7 @@ export def is-file [path: path]: nothing -> bool {
     if not ($path | path exists) { false } else { ($path | path type) == file }
 }
 
-# Run a command and show its output live. Fail on a nonzero exit status, except --allow-exit-code.
+# Run a command with live output; fail on a nonzero exit, except --allow-exit-code.
 export def run-command [
     --allow-exit-code: int # treat this nonzero exit status as success
     command: string
@@ -37,7 +37,7 @@ export def run-command [
 
 const PROJECT_FILE = ".project.json"
 
-# Find the nearest directory that holds .project.json, from a directory upwards (the current one by default).
+# Find the nearest directory with a .project.json, searching upwards.
 export def find-project-dir [from?: path]: nothing -> oneof<path, nothing> {
     mut dir = $from | default (pwd) | path expand
     loop {
@@ -48,7 +48,7 @@ export def find-project-dir [from?: path]: nothing -> oneof<path, nothing> {
     }
 }
 
-# Return the project root: the directory with .project.json, else the Git root, else the current directory.
+# Return the project root: the .project.json folder, else the Git root, else the current folder.
 export def project-root []: nothing -> path {
     let project = find-project-dir
     if $project != null { return $project }
@@ -76,7 +76,7 @@ export def read-project []: nothing -> record {
     $project
 }
 
-# Choose one environment of a project: the named one, or the only one. Fail when the choice is ambiguous.
+# Choose an environment: the named one, or the only one; fail when ambiguous.
 export def select-environment [project: record, name: oneof<string, nothing>]: nothing -> record {
     let environments = $project.env? | default {}
     if ($environments | is-empty) {
