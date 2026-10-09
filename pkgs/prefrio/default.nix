@@ -37,7 +37,12 @@
       final.buildEnv {
         name = "prefrio";
         paths = [ cli ] ++ tools;
-        meta.mainProgram = "prefrio";
+        meta = {
+          description = "CLI for Terragrunt, SOPS and Kubernetes";
+          homepage = "https://github.com/prefeitura-rio/flakes/tree/master/pkgs/prefrio";
+          license = final.lib.licenses.asl20;
+          mainProgram = "prefrio";
+        };
       };
   };
 }
