@@ -6,7 +6,7 @@ use std/testing *
 const ROOT = path self | path dirname | path dirname
 const TF_SCRIPT = $ROOT | path join tf.nu
 const LIB_SCRIPT = $ROOT | path join lib.nu
-const AUTH_SCRIPT = $ROOT | path join prefrio.nu
+const AUTH_SCRIPT = $ROOT | path join cli.nu
 
 # Raise a labelled test-fixture error.
 def test-error [message: string]: nothing -> error {
@@ -158,7 +158,7 @@ def run-module [context: record, ...args: string]: nothing -> record {
     }
 }
 
-# Run prefrio.nu as a script in an isolated fixture.
+# Run cli.nu as a script in an isolated fixture.
 def run-script [context: record, ...args: string]: nothing -> record {
     let arg_list = $context.command
     | append $args

@@ -2,7 +2,7 @@
 let
   scripts = pkgs.runCommand "prefrio-scripts" { } ''
     mkdir -p $out
-    cp ${./prefrio.nu} $out/prefrio.nu
+    cp ${./cli.nu} $out/prefrio
     cp ${./lib.nu} $out/lib.nu
     cp ${./tf.nu} $out/tf.nu
   '';
@@ -24,7 +24,7 @@ let
   cli = pkgs.writeShellApplication {
     name = "prefrio";
     text = ''
-      exec ${pkgs.nushell}/bin/nu --plugins '[${skim}]' ${scripts}/prefrio.nu "$@"
+      exec ${pkgs.nushell}/bin/nu --plugins '[${skim}]' ${scripts}/prefrio "$@"
     '';
     runtimeInputs = tools ++ [
       pkgs.git
