@@ -240,11 +240,20 @@ export def "main tf validate" [--module(-m): string, --environment(-e): string]:
 # Run tfsec with the central config on every project that owns one of the given files, or on the current project without files. Every project is scanned before the command fails.
 export def "main tf scan" [...files: string]: nothing -> nothing {
     let span = (metadata $files).span
+
     if ($env.TF_LIB? | is-empty) {
         fail "TF_LIB is not set. Run prefrio inside the infra devenv, which provides the central tfsec config." {command: scan span: $span}
     }
+
     let config = $env.TF_LIB | path join tfsec.yml
-    let dirs = if ($files | is-empty) { [(pwd)] } else { $files | path expand | path dirname }
+    let dirs = if ($files | is-empty) {
+        [
+            (pwd)
+        ]
+    } else {
+        $files | path expand | path dirname
+    }
+
     let projects = $dirs | each {|dir| find-project-dir $dir } | where $it != null | uniq
 
     if ($files | is-empty) and ($projects | is-empty) {
