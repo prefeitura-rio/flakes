@@ -1,26 +1,37 @@
 {
   description = "Packages for Prefeitura do Rio infrastructure";
 
-  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    import-tree.url = "github:denful/import-tree";
+  };
 
   outputs =
-    { nixpkgs, ... }:
+    { nixpkgs, import-tree, ... }:
     let
-      systems = [
+      inherit (nixpkgs) lib;
+
+      overlays = import ./overlays.nix { inherit lib import-tree; };
+
+      packageNames = lib.attrNames (overlays.default { } { });
+
+      forEachSystem = lib.genAttrs [
         "x86_64-linux"
         "aarch64-linux"
         "x86_64-darwin"
         "aarch64-darwin"
       ];
-      forEachSystem = nixpkgs.lib.genAttrs systems;
+
+      pkgsFor =
+        system:
+        import nixpkgs {
+          inherit system;
+          overlays = [ overlays.default ];
+        };
     in
     {
-      packages = forEachSystem (system: {
-        prefrio = import ./pkgs/prefrio { pkgs = nixpkgs.legacyPackages.${system}; };
-      });
+      inherit overlays;
 
-      overlays.default = final: _prev: {
-        prefrio = import ./pkgs/prefrio { pkgs = final; };
-      };
+      packages = forEachSystem (system: lib.getAttrs packageNames (pkgsFor system));
     };
 }

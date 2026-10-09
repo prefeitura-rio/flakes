@@ -1,39 +1,43 @@
-{ pkgs }:
-let
-  scripts = pkgs.runCommand "prefrio-scripts" { } ''
-    mkdir -p $out
-    cp ${./cli.nu} $out/prefrio
-    cp ${./lib.nu} $out/lib.nu
-    cp ${./tf.nu} $out/tf.nu
-  '';
+{
+  overlays.prefrio = final: _prev: {
+    prefrio =
+      let
+        scripts = final.runCommand "prefrio-scripts" { } ''
+          mkdir -p $out
+          cp ${./cli.nu} $out/prefrio
+          cp ${./lib.nu} $out/lib.nu
+          cp ${./tf.nu} $out/tf.nu
+        '';
 
-  gcloud = pkgs.google-cloud-sdk.withExtraComponents (
-    with pkgs.google-cloud-sdk.components; [ gke-gcloud-auth-plugin ]
-  );
+        gcloud = final.google-cloud-sdk.withExtraComponents (
+          with final.google-cloud-sdk.components; [ gke-gcloud-auth-plugin ]
+        );
 
-  tools = [
-    gcloud
-    pkgs.kubectl
-    pkgs.opentofu
-    pkgs.sops
-    pkgs.terragrunt
-  ];
+        tools = [
+          gcloud
+          final.kubectl
+          final.opentofu
+          final.sops
+          final.terragrunt
+        ];
 
-  skim = "${pkgs.nushellPlugins.skim}/bin/nu_plugin_skim";
+        skim = "${final.nushellPlugins.skim}/bin/nu_plugin_skim";
 
-  cli = pkgs.writeShellApplication {
-    name = "prefrio";
-    text = ''
-      exec ${pkgs.nushell}/bin/nu --plugins '[${skim}]' ${scripts}/prefrio "$@"
-    '';
-    runtimeInputs = tools ++ [
-      pkgs.git
-      pkgs.nushell
-    ];
+        cli = final.writeShellApplication {
+          name = "prefrio";
+          text = ''
+            exec ${final.nushell}/bin/nu --plugins '[${skim}]' ${scripts}/prefrio "$@"
+          '';
+          runtimeInputs = tools ++ [
+            final.git
+            final.nushell
+          ];
+        };
+      in
+      final.buildEnv {
+        name = "prefrio";
+        paths = [ cli ] ++ tools;
+        meta.mainProgram = "prefrio";
+      };
   };
-in
-pkgs.buildEnv {
-  name = "prefrio";
-  paths = [ cli ] ++ tools;
-  meta.mainProgram = "prefrio";
 }
