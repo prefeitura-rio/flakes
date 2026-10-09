@@ -24,7 +24,23 @@ imports:
 | ------------------------- | --------------------------------------------------------------------- |
 | [infra](devenv/infra.nix) | prefrio, `TF_LIB`, and the Terraform, tflint and Terragrunt git hooks |
 
-A profile can use only the inputs that every project declares: `nixpkgs`, `git-hooks` and `prefrio`. Files that belong to a profile, such as `devenv/infra/tflint.hcl`, live in a folder with the profile's name.
+A profile can use only the inputs that every project declares: `nixpkgs`, `git-hooks` and `prefrio`.
+
+Files that belong to a profile, such as a config file, live in `devenv/files/<profile>/`, and the profile refers to them by relative path:
+
+```
+devenv/
+├── infra.nix
+└── files/
+    └── infra/
+        └── tflint.hcl
+```
+
+```nix
+env.TFLINT_CONFIG_FILE = "${./files/infra}/tflint.hcl";
+```
+
+The path is a store path once a project imports the profile, so the files are pinned with the lock and cannot change underneath a project.
 
 ## Development
 
