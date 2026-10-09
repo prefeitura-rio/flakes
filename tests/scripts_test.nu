@@ -69,10 +69,10 @@ def make-fixture []: nothing -> record {
     {
         directory: $directory
         bin: $bin
-        terragrunt_args: ($directory | path join terragrunt-args.json)
-        kubectl_args: ($directory | path join kubectl-args.json)
-        gcloud_args: ($directory | path join gcloud-args.json)
-        sops_args: ($directory | path join sops-args.json)
+        terragrunt_args: ($directory | path join terragrunt-args.json),
+        kubectl_args: ($directory | path join kubectl-args.json),
+        gcloud_args: ($directory | path join gcloud-args.json),
+        sops_args: ($directory | path join sops-args.json),
         path: ($env.PATH? | default [])
     }
 }
@@ -129,12 +129,17 @@ def make-executable [path: path]: nothing -> nothing {
 # Build the environment for fake external commands.
 def fixture-env [fixture: record]: nothing -> record {
     {
-        PATH: ([$fixture.bin] | append $fixture.path)
+        PATH: ([$fixture.bin] | append $fixture.path),
         TERRAGRUNT_ARGS_FILE: $fixture.terragrunt_args
         KUBECTL_ARGS_FILE: $fixture.kubectl_args
         GCLOUD_ARGS_FILE: $fixture.gcloud_args
         SOPS_ARGS_FILE: $fixture.sops_args
     }
+}
+
+# Return the stdin text of a test context, or an empty string when the test gives none.
+def stdin-of [context: record]: nothing -> string {
+    if "stdin" in $context { $context.stdin } else { "" }
 }
 
 # Run a module command in an isolated fixture.
@@ -146,7 +151,7 @@ def run-module [context: record, ...args: string]: nothing -> record {
     with-env (fixture-env $context.fixture | merge ($context.env? | default {})) {
         try {
             cd $context.directory
-            ($context.stdin? | default "") | nu -c $source | complete
+            (stdin-of $context) | nu -c $source | complete
         } catch {|err|
             {exit_code: 1, stdout: "", stderr: $err.msg}
         }
@@ -175,8 +180,8 @@ def run-tf-in [context: record, ...args: string]: nothing -> record {
         module: $TF_SCRIPT
         command: [tf]
         directory: $context.directory
-        env: ($context.env? | default {})
-        stdin: ($context.stdin? | default "")
+        env: ($context.env? | default {}),
+        stdin: (stdin-of $context)
     } ...$args
 }
 
@@ -201,7 +206,7 @@ def plan-dir []: record -> path {
 }
 
 # Write an empty saved plan for a unit and return its directory.
-def write-plan [fixture: record, unit: string]: nothing -> path {
+def write-plan [fixture: record, unit: path]: nothing -> path {
     let directory = ($fixture | plan-dir) | path join $unit
     try { mkdir $directory } catch {|err| test-error $err.msg }
     write-file "" ($directory | path join tfplan.tfplan)
@@ -324,14 +329,18 @@ def prefrio-tf-apply-auto-approves []: record -> nothing {
 def prefrio-tf-apply-keeps-the-plans-when-it-fails []: record -> nothing {
     let fixture = $in
     let plan = write-plan $fixture a
-    let result = run-tf-in {fixture: $fixture directory: $fixture.directory env: {FAKE_EXIT: 1}} apply
+    let result = run-tf-in {
+    fixture: $fixture
+    directory: $fixture.directory
+    env: {FAKE_EXIT: 1}
+} apply
 
     assert ($result.exit_code != 0)
     assert ($plan | path exists) "The plans of a failed apply were removed."
 }
 
 # Replace the flat fixture units with module-first units, as in <module>/<environment>.
-def use-module-first-units [fixture: record, units: list<string>]: nothing -> nothing {
+def use-module-first-units [fixture: record, ...units: string] {
     let root = $fixture | units-dir
     try { rm --recursive --force ($root | path join a) ($root | path join b) } catch {|err| test-error $err.msg }
     for unit in $units {
@@ -345,10 +354,16 @@ def use-module-first-units [fixture: record, units: list<string>]: nothing -> no
 @test
 def prefrio-tf-plan-all-environment-plans-only-that-environment []: record -> nothing {
     let fixture = $in
-    use-module-first-units $fixture [gcp/stg gcp/prod k8s/stg k8s/prod]
+    use-module-first-units $fixture gcp/stg gcp/prod k8s/stg k8s/prod
     let cases = [
-        {environment: stg, filters: [--filter ./gcp/stg --filter ./k8s/stg]}
-        {environment: prod, filters: [--filter ./gcp/prod --filter ./k8s/prod]}
+        {
+    environment: stg
+    filters: [--filter ./gcp/stg --filter ./k8s/stg]
+}
+        {
+    environment: prod
+    filters: [--filter ./gcp/prod --filter ./k8s/prod]
+}
     ]
 
     for case in $cases {
@@ -366,7 +381,7 @@ def prefrio-tf-plan-all-environment-plans-only-that-environment []: record -> no
 @test
 def prefrio-tf-plan-selectors-narrow-the-units []: record -> nothing {
     let fixture = $in
-    use-module-first-units $fixture [gcp/stg gcp/prod k8s/stg]
+    use-module-first-units $fixture gcp/stg gcp/prod k8s/stg
     let cases = [
         {args: [-a -m gcp], units: [gcp/prod gcp/stg]}
         {args: [-m gcp -e stg], units: [gcp/stg]}
@@ -374,7 +389,10 @@ def prefrio-tf-plan-selectors-narrow-the-units []: record -> nothing {
         {args: [-m k8s], units: [k8s/stg]}
         {args: [-m k8s/stg], units: [k8s/stg]}
         {args: [-a -e stg], units: [gcp/stg k8s/stg]}
-        {args: [--all --module k8s --environment stg], units: [k8s/stg]}
+        {
+    args: [--all --module k8s --environment stg]
+    units: [k8s/stg]
+}
     ]
 
     for case in $cases {
@@ -393,12 +411,16 @@ def prefrio-tf-plan-selectors-narrow-the-units []: record -> nothing {
 @test
 def prefrio-tf-plan-forwards-extra-arguments-with-selectors []: record -> nothing {
     let fixture = $in
-    use-module-first-units $fixture [gcp/stg gcp/prod]
+    use-module-first-units $fixture gcp/stg gcp/prod
     let cases = [
         {args: [-a], units: [gcp/prod gcp/stg], narrowed: false}
         {args: [-a -e stg], units: [gcp/stg], narrowed: true}
         {args: [-m gcp -e prod], units: [gcp/prod], narrowed: true}
-        {args: [-m gcp -a], units: [gcp/prod gcp/stg], narrowed: true}
+        {
+    args: [-m gcp -a]
+    units: [gcp/prod gcp/stg]
+    narrowed: true
+}
     ]
 
     for case in $cases {
@@ -417,17 +439,46 @@ def prefrio-tf-plan-forwards-extra-arguments-with-selectors []: record -> nothin
 @test
 def prefrio-tf-plan-rejects-selectors-that-match-no-unit []: record -> nothing {
     let fixture = $in
-    use-module-first-units $fixture [gcp/stg gcp/prod k8s/stg]
+    use-module-first-units $fixture gcp/stg gcp/prod k8s/stg
     let cases = [
-        {args: [-a -e st], message: "No unit belongs to the st environment"}
-        {args: [-a -e STG], message: "No unit belongs to the STG environment"}
-        {args: [-a -e gcp], message: "No unit belongs to the gcp environment"}
-        {args: [-a -e k8s], message: "No unit belongs to the k8s environment"}
-        {args: [-a -m gc], message: "gc is not a unit or module under"}
-        {args: [-a -m stg], message: "stg is not a unit or module under"}
-        {args: [-a -m gcp/st], message: "gcp/st is not a unit or module under"}
-        {args: [-e stg -m k8s/prod], message: "k8s/prod is not a unit or module in the stg environment", available: "gcp/stg, k8s/stg"}
-        {args: [-m k8s -e prod], message: "k8s is not a unit or module in the prod environment", available: "gcp/prod"}
+        {
+    args: [-a -e st]
+    message: "No unit belongs to the st environment"
+}
+        {
+    args: [-a -e STG]
+    message: "No unit belongs to the STG environment"
+}
+        {
+    args: [-a -e gcp]
+    message: "No unit belongs to the gcp environment"
+}
+        {
+    args: [-a -e k8s]
+    message: "No unit belongs to the k8s environment"
+}
+        {
+    args: [-a -m gc]
+    message: "gc is not a unit or module under"
+}
+        {
+    args: [-a -m stg]
+    message: "stg is not a unit or module under"
+}
+        {
+    args: [-a -m gcp/st]
+    message: "gcp/st is not a unit or module under"
+}
+        {
+    args: [-e stg -m k8s/prod]
+    message: "k8s/prod is not a unit or module in the stg environment"
+    available: "gcp/stg, k8s/stg"
+}
+        {
+    args: [-m k8s -e prod]
+    message: "k8s is not a unit or module in the prod environment"
+    available: "gcp/prod"
+}
     ]
 
     for case in $cases {
@@ -446,7 +497,7 @@ def prefrio-tf-plan-rejects-selectors-that-match-no-unit []: record -> nothing {
 @test
 def prefrio-tf-plan-environment-clears-the-plans-of-the-other-environment []: record -> nothing {
     let fixture = $in
-    use-module-first-units $fixture [gcp/stg gcp/prod k8s/stg k8s/prod]
+    use-module-first-units $fixture gcp/stg gcp/prod k8s/stg k8s/prod
     let stale = write-plan $fixture gcp/prod
     let result = run-tf $fixture plan "-a" "-e" stg
 
@@ -475,7 +526,7 @@ def prefrio-tf-init-rejects-every-selector []: record -> nothing {
 @test
 def prefrio-tf-plan-needs-a-choice-when-several-units-remain []: record -> nothing {
     let fixture = $in
-    use-module-first-units $fixture [gcp/stg gcp/prod k8s/stg k8s/prod]
+    use-module-first-units $fixture gcp/stg gcp/prod k8s/stg k8s/prod
 
     for args in [[] [-m gcp] [-e stg]] {
         let result = run-tf $fixture plan ...$args
@@ -491,7 +542,7 @@ def prefrio-tf-plan-needs-a-choice-when-several-units-remain []: record -> nothi
 @test
 def prefrio-tf-apply-runs-exactly-the-planned-units []: record -> nothing {
     let fixture = $in
-    use-module-first-units $fixture [gcp/stg gcp/prod k8s/stg k8s/prod]
+    use-module-first-units $fixture gcp/stg gcp/prod k8s/stg k8s/prod
     write-plan $fixture gcp/stg
     write-plan $fixture k8s/stg
     let result = run-tf $fixture apply
@@ -508,13 +559,32 @@ def prefrio-tf-apply-runs-exactly-the-planned-units []: record -> nothing {
 def prefrio-get-kubeconfig-rejects-an-unusable-project []: record -> nothing {
     let fixture = $in
     let cases = [
-        {project: (two-environment-project), args: ["--environment" qa], message: "no environment qa"}
-        {project: {name: kms, env: {default: {project: rj-iplanrio-dia}}}, args: [], message: "has no cluster"}
-        {project: {name: tailscale}, args: [], message: "has no env record"}
+        {
+    project: (two-environment-project),
+    args: ["--environment" qa]
+    message: "no environment qa"
+}
+        {project: {
+    name: kms
+    env: {default: {project: rj-iplanrio-dia}}
+}, args: [], message: "has no cluster"}
+        {
+    project: {name: tailscale}
+    args: []
+    message: "has no env record"
+}
         {project: null, args: [], message: "No .project.json found"}
         {raw: "{", args: [], message: "Could not read"}
-        {raw: "[1, 2]", args: [], message: "must be a record with a name"}
-        {raw: "{env: {}}", args: [], message: "must be a record with a name"}
+        {
+    raw: "[1, 2]"
+    args: []
+    message: "must be a record with a name"
+}
+        {
+    raw: "{env: {}}",
+    args: []
+    message: "must be a record with a name"
+}
     ]
 
     for item in ($cases | enumerate) {
@@ -545,7 +615,10 @@ def prefrio-tf-plan-environment-is-not-a-unit-name []: record -> nothing {
 @test
 def prefrio-get-kubeconfig-omits-location-without-a-region []: record -> nothing {
     let fixture = $in
-    write-project $fixture.directory {name: demo, env: {default: {project: rj-demo, cluster: demo}}}
+    write-project $fixture.directory {
+    name: demo
+    env: {default: {project: rj-demo, cluster: demo}}
+}
     let result = run-get-kubeconfig $fixture $fixture.directory
 
     assert equal $result.exit_code 0 $result.stderr
@@ -565,7 +638,7 @@ def prefrio-tf-plan-ignores-cache-folders []: record -> nothing {
 
     assert ($result.exit_code != 0)
     assert ($result.stderr =~ "Available: a, b")
-    assert (not ($result.stderr | str contains "cache"))
+    assert (not ($result.stderr =~ "cache"))
 }
 
 # Verify plan explains an empty or missing units directory.
@@ -619,7 +692,7 @@ def prefrio-tf-edit-vars-needs-one-existing-file []: record -> nothing {
     try { rm --force ($units | path join a terraform.tfvars.sops.json) ($units | path join b terraform.tfvars.sops.json) } catch {|err| test-error $err.msg }
     let none = run-tf $fixture edit-vars
     assert ($none.exit_code != 0)
-    assert ($none.stderr | str contains "files found under")
+    assert ($none.stderr =~ "files found under")
 
     assert (not ($fixture.sops_args | path exists)) "A rejected choice reached sops."
 }
@@ -654,7 +727,9 @@ def write-project [directory: path, project: record]: nothing -> nothing {
 def single-project []: nothing -> record {
     {
         name: gitlab
-        env: {default: {project: rj-gitlab, region: us-central1, cluster: gitlab}}
+        env: {
+    default: {project: rj-gitlab, region: us-central1, cluster: gitlab}
+}
     }
 }
 
@@ -828,4 +903,72 @@ def run-command-reports-failing-exit-code []: record -> nothing {
 
     assert ($result.exit_code != 0)
     assert ($result.stderr =~ "exit 3")
+}
+
+# Verify validate checks the inputs of every unit and then validates every unit.
+@test
+def prefrio-tf-validate-checks-every-unit []: record -> nothing {
+    let fixture = $in
+    let result = run-tf $fixture validate
+
+    assert equal $result.exit_code 0 $result.stderr
+    let units = $fixture | units-dir
+    let calls = [
+        [hcl validate --working-dir $units --inputs --strict]
+        [run --all --working-dir $units -- validate]
+    ]
+    assert equal (read-terragrunt-calls $fixture) $calls
+}
+
+# Verify --module and --environment narrow both validation steps to the same units.
+@test
+def prefrio-tf-validate-selectors-narrow-the-units []: record -> nothing {
+    let fixture = $in
+    use-module-first-units $fixture gcp/stg gcp/prod k8s/stg
+    let cases = [
+        {args: [-m gcp -e stg], units: [gcp/stg]}
+        {args: [-e stg], units: [gcp/stg k8s/stg]}
+        {args: [-m gcp], units: [gcp/prod gcp/stg]}
+    ]
+
+    for case in $cases {
+        let result = run-tf $fixture validate ...$case.args
+        assert equal $result.exit_code 0 $"($case.args | str join ' '): ($result.stderr)"
+    }
+
+    let units = $fixture | units-dir
+    let expected = $cases | each {|case|
+        let filters = $case.units | each {|unit| [--filter $"./($unit)"] } | flatten
+        [
+            [hcl validate --working-dir $units --inputs --strict ...$filters]
+            [run --all --working-dir $units ...$filters -- validate]
+        ]
+    } | flatten
+    assert equal (read-terragrunt-calls $fixture) $expected
+}
+
+# Verify a failing input check stops validate before OpenTofu runs.
+@test
+def prefrio-tf-validate-stops-when-the-input-check-fails []: record -> nothing {
+    let fixture = $in
+    let result = run-tf-in {
+    fixture: $fixture
+    directory: $fixture.directory
+    env: {FAKE_EXIT: "1"}
+} validate
+
+    assert ($result.exit_code != 0)
+    let units = $fixture | units-dir
+    assert equal (read-terragrunt-calls $fixture) [[hcl validate --working-dir $units --inputs --strict]]
+}
+
+# Verify validate rejects a selector that matches no unit, without calling Terragrunt.
+@test
+def prefrio-tf-validate-rejects-selectors-that-match-no-unit []: record -> nothing {
+    let fixture = $in
+    let result = run-tf $fixture validate "--module" nowhere
+
+    assert ($result.exit_code != 0)
+    assert str contains $result.stderr "nowhere is not a unit or module"
+    assert (not ($fixture.terragrunt_args | path exists))
 }

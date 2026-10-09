@@ -21,15 +21,15 @@ def units-root [root: path]: nothing -> string {
 def unit-names [units_dir: path]: nothing -> list<string> {
     glob ($units_dir | path join "**/terragrunt.hcl") --no-dir --exclude ["**/.terragrunt-cache/**" "**/.terraform/**"]
     | each {|file| $file | path dirname | path relative-to $units_dir }
-    | where {|name| $name != "" }
+    | where $it != ""
     | sort
 }
 
 # Keep the units of an environment. A unit is <module>/<environment>, so the environment is the second folder.
 def units-of-environment [units: list<string>, environment: oneof<string, nothing>]: nothing -> list<string> {
     if $environment == null { return $units }
-    $units | where {|name|
-        let parts = $name | path split
+    $units | where {
+        let parts = $in | path split
         ($parts | length) == 2 and $parts.1? == $environment
     }
 }
@@ -37,7 +37,7 @@ def units-of-environment [units: list<string>, environment: oneof<string, nothin
 # Keep the units that are the module itself or sit inside the module folder.
 def units-of-module [units: list<string>, module: oneof<string, nothing>]: nothing -> list<string> {
     if $module == null { return $units }
-    $units | where {|name| $name == $module or ($name | path split | first) == $module }
+    $units | where $it == $module or ($it | path split | first) == $module
 }
 
 # List the units that match the environment and module selectors, failing when none do.
@@ -71,33 +71,22 @@ def candidate-units [units_dir: path, selection: record]: nothing -> list<string
     $matching
 }
 
-# Pick one of the candidate units: the only one, or the choice made in a picker.
-def pick-unit [units_dir: path]: list<string> -> string {
-    let units = $in
-    if ($units | length) == 1 {
-        return ($units | first)
-    }
-
+# Choose one item with the skim picker. Return null when nothing is chosen, and fail when the plugin is missing.
+def pick-one [prompt: string, missing_plugin_hint: string]: list<string> -> oneof<string, nothing> {
+    let items = $in
     if (scope commands | where name == sk | is-empty) {
-        fail "The skim plugin is not loaded. Pass --all or --module NAME." {
-            command: terragrunt
-            span: (metadata $units_dir).span
+        fail $"The skim plugin is not loaded. ($missing_plugin_hint)" {
+            command: picker
+            span: (metadata $prompt).span
         }
     }
 
     let choice = try {
-        $units | sk --height $SKIM_HEIGHT --prompt "unit> " | default null
+        $items | sk --height $SKIM_HEIGHT --prompt $prompt | default null
     } catch {
         null
     }
-
-    if $choice == null or $choice == "" {
-        fail "No unit selected. Pass --all or --module NAME." {
-            command: terragrunt
-            span: (metadata $units_dir).span
-        }
-    }
-    $choice
+    if $choice == "" { null } else { $choice }
 }
 
 # Remove the saved plans, reporting a useful error.
@@ -130,8 +119,21 @@ def run-plan [selection: record, ...extra: string]: nothing -> nothing {
     let plans = $units_dir | path join $PLAN_DIR
     let candidates = candidate-units $units_dir $selection
     let narrowed = $selection.module != null or $selection.environment != null
-    let chosen = if $selection.all { $candidates } else { [($candidates | pick-unit $units_dir)] }
-    let filters = if $selection.all and not $narrowed { [] } else { $chosen | each {|unit| [--filter $"./($unit)"] } | flatten }
+    let chosen = if $selection.all or ($candidates | length) == 1 {
+        $candidates
+    } else {
+        let choice = $candidates | pick-one "unit> " "Pass --all or --module NAME."
+        if $choice == null {
+            fail "No unit selected. Pass --all or --module NAME." {
+                command: terragrunt
+                span: (metadata $units_dir).span
+            }
+        }
+        [$choice]
+    }
+    let filters = if $selection.all and not $narrowed { [] } else {
+        $chosen | each {|unit| [--filter $"./($unit)"] } | flatten
+    }
 
     clear-plans $plans
     run-command terragrunt ...[
@@ -147,6 +149,36 @@ def run-plan [selection: record, ...extra: string]: nothing -> nothing {
         ...$extra
     ]
     log info "Terragrunt plan completed"
+}
+
+# Check the inputs of the chosen units, then validate them with OpenTofu. Without selectors every unit is checked.
+def run-validate [selection: record]: nothing -> nothing {
+    let units_dir = units-root (project-root)
+    let candidates = candidate-units $units_dir $selection
+    let narrowed = $selection.module != null or $selection.environment != null
+    let filters = if $narrowed {
+        $candidates | each {|unit| [--filter $"./($unit)"] } | flatten
+    } else { [] }
+
+    run-command terragrunt ...[
+        hcl
+        validate
+        --working-dir
+        $units_dir
+        --inputs
+        --strict
+        ...$filters
+    ]
+    run-command terragrunt ...[
+        run
+        --all
+        --working-dir
+        $units_dir
+        ...$filters
+        --
+        validate
+    ]
+    log info "Terragrunt validate completed"
 }
 
 # Apply the units that have a saved plan. The plan directory records what was planned.
@@ -198,13 +230,7 @@ def choose-tfvars-file [root: path]: nothing -> oneof<string, nothing> {
             $files | first
         }
         _ => {
-            if (scope commands | where name == sk | is-empty) {
-                fail "The skim plugin is not loaded. Pass a file path or run prefrio from the Nix package." {
-                    command: edit-vars
-                    span: (metadata $root).span
-                }
-            }
-            let choice = $files | path relative-to $root | sk --height $SKIM_HEIGHT --prompt "tfvars> " | default null
+            let choice = $files | path relative-to $root | pick-one "tfvars> " "Pass a file path or run prefrio from the Nix package."
             if $choice == null { null } else {
                 $root | path join $choice
             }
@@ -218,14 +244,45 @@ export def "main tf init" [...extra: string]: nothing -> nothing {
 }
 
 # Plan one unit by default, or every unit with --all. --module and --environment narrow the units (--module gcp --environment stg is gcp/stg), and --all takes every unit left. Plans are saved in units/terragrunt.plan.
-export def "main tf plan" [--all(-a), --module(-m): string, --environment(-e): string, ...extra: string]: nothing -> nothing {
+export def "main tf plan" [
+    --all(-a)
+    --module(-m): string
+    --environment(-e): string
+    ...extra: string
+]: nothing -> nothing {
     let selection = {
         all: $all
-        module: (if $module == null { null } else { $module | str trim })
-        environment: (if $environment == null { null } else { $environment | str trim })
+        module: (
+            if $module == null { null } else {
+                $module | str trim
+            }
+        )
+        environment: (
+            if $environment == null { null } else {
+                $environment | str trim
+            }
+        )
     }
 
     run-plan $selection ...$extra
+}
+
+# Check the inputs and validate the units. --module and --environment narrow the units; without them every unit is checked.
+export def "main tf validate" [--module(-m): string, --environment(-e): string]: nothing -> nothing {
+    let selection = {
+        module: (
+            if $module == null { null } else {
+                $module | str trim
+            }
+        )
+        environment: (
+            if $environment == null { null } else {
+                $environment | str trim
+            }
+        )
+    }
+
+    run-validate $selection
 }
 
 # Apply the saved plans. Selectors are not accepted here.
