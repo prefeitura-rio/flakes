@@ -89,12 +89,6 @@ macOS:
 curl -sSfL https://artifacts.nixos.org/nix-installer | sh -s -- install
 ```
 
-Windows (WSL2):
-
-```bash
-sh <(curl -L https://nixos.org/nix/install) --no-daemon
-```
-
 Open a new terminal and run `nix --version`. macOS ships an old Bash, so the devenv guide recommends a newer one from nixpkgs:
 
 ```bash
@@ -103,7 +97,7 @@ nix-env --install --attr bashInteractive -f https://github.com/NixOS/nixpkgs/tar
 
 ### 2. Enable flakes
 
-The `nix` command and flakes are experimental features, off by default. Until you enable them, `nix` commands fail with `experimental Nix feature 'nix-command' is disabled`. The Determinate Nix Installer enables flakes by default, but it installs Determinate Nix, a different distribution; the commands above do not.
+The `nix` command and flakes are experimental features, off by default, and the installers above do not enable them. Until you enable them, `nix` commands fail with `experimental Nix feature 'nix-command' is disabled`.
 
 For a single command, pass the option:
 
@@ -134,21 +128,15 @@ Reference: [Flakes on the NixOS Wiki](https://wiki.nixos.org/wiki/Flakes) and [n
 
 ### 3. Install devenv
 
-With flakes enabled:
-
-```bash
-nix profile add nixpkgs#devenv
-```
-
-`nix profile install` is the older name of the same command. It still works, with a deprecation warning. To upgrade later, run `nix profile upgrade devenv`.
-
-Without flakes:
-
 ```bash
 nix-env --install --attr devenv -f https://github.com/NixOS/nixpkgs/tarball/nixpkgs-unstable
 ```
 
-On NixOS or nix-darwin, add `pkgs.devenv` to `environment.systemPackages`. With Home Manager, add it to `home.packages`.
+To upgrade it later:
+
+```bash
+nix-env --upgrade --attr devenv -f https://github.com/NixOS/nixpkgs/tarball/nixpkgs-unstable
+```
 
 Check it with `devenv --version`. Then `devenv shell` in this repository gives you the development environment.
 
