@@ -1,12 +1,12 @@
 # flakes
 
-Nix packages for Prefeitura do Rio infrastructure. Each package lives in its own folder, with its build instructions (`pkg.nix`), its README and its tests. `flake.nix` only wires the packages together.
+Nix packages for Prefeitura do Rio infrastructure. Each package lives in its own folder, with its build instructions (`default.nix`), its README and its tests. `flake.nix` only lists what the flake exposes, and `overlays.nix` loads the packages.
 
-| Package                      | Description                             |
-| ---------------------------- | --------------------------------------- |
-| [prefrio](prefrio/README.md) | CLI for Terragrunt, SOPS and Kubernetes |
+| Package                           | Description                             |
+| --------------------------------- | --------------------------------------- |
+| [prefrio](pkgs/prefrio/README.md) | CLI for Terragrunt, SOPS and Kubernetes |
 
-The flake exposes each package as `packages.<system>.<name>`, and `overlays.default` adds them to `pkgs`.
+Every `.nix` file under `pkgs/` is a module that defines an overlay: `overlays.<name> = final: _prev: { <name> = ...; };`. `overlays.nix` loads them all with [import-tree](https://github.com/denful/import-tree), composes them into `overlays.default`, exposes each one as `overlays.<name>`, and builds `packages.<system>` from that same overlay. A file or folder whose name starts with `_` is skipped, so a helper that is not a module must start with `_`.
 
 ## Development
 
@@ -14,10 +14,11 @@ The flake exposes each package as `packages.<system>.<name>`, and `overlays.defa
 
 ```bash
 devenv shell
-run-tests
+devenv tasks run <pkg>:test
+devenv tasks run pkgs:test # use this to run all tests in all packages
 ```
 
 ## Adding a package
 
-1. Create a folder with a `pkg.nix` that takes `{ pkgs }` and returns the package, a `README.md`, and a `tests/` folder.
-2. Add the package to `packages` and to `overlays.default` in `flake.nix`.
+1. Create `pkgs/<name>/` with a `default.nix` that defines `overlays.<name>`, a `README.md`, and a `tests/` folder. The flake picks it up with no other change.
+2. In `devenv.nix`, add a `<name>:test` task and list it in the `after` of `pkgs:test`.
