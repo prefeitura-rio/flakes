@@ -4,9 +4,9 @@ use std/assert
 use std/testing *
 
 const ROOT = path self | path dirname | path dirname
-const TF_SCRIPT = $ROOT | path join scripts/tf.nu
-const LIB_SCRIPT = $ROOT | path join scripts/lib.nu
-const AUTH_SCRIPT = $ROOT | path join scripts/prefrio.nu
+const TF_SCRIPT = $ROOT | path join tf.nu
+const LIB_SCRIPT = $ROOT | path join lib.nu
+const AUTH_SCRIPT = $ROOT | path join prefrio.nu
 
 # Raise a labelled test-fixture error.
 def test-error [message: string]: nothing -> error {

@@ -1,0 +1,11 @@
+inputs:
+  nixpkgs:
+    url: github:nixos/nixpkgs/nixos-unstable
+  git-hooks:
+    url: github:cachix/git-hooks.nix
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
+  nutest:
+    url: github:vyadh/nutest/v1.2.0
+    flake: false
