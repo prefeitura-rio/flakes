@@ -1,4 +1,9 @@
-{ pkgs, inputs, ... }:
+{
+  pkgs,
+  config,
+  inputs,
+  ...
+}:
 {
   name = "flakes";
 
@@ -10,9 +15,19 @@
     nixfmt
   ];
 
-  scripts.run-tests.exec = ''
-    nu -c 'use nutest; nutest run-tests --path pkgs/prefrio/tests --fail'
-  '';
+  tasks = {
+    "prefrio:test" = {
+      cwd = "${config.devenv.root}/pkgs/prefrio";
+      package = pkgs.nushell;
+      exec = ''
+        use nutest
+        nutest run-tests --path tests
+      '';
+    };
+    "pkgs:test".after = [
+      "prefrio:test"
+    ];
+  };
 
   git-hooks.hooks.nixfmt.enable = true;
 }
