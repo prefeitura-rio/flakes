@@ -89,22 +89,6 @@ def clear-plans [plans: path]: nothing -> nothing {
         } }
 }
 
-# Initialize every unit.
-def run-init [...extra: string]: nothing -> nothing {
-    let units_dir = units-root (project-root)
-    run-command terragrunt ...[
-        run
-        --all
-        --working-dir
-        $units_dir
-        --
-        init
-        -reconfigure
-        ...$extra
-    ]
-    log info "Terragrunt init completed"
-}
-
 # Plan the chosen units with Terragrunt, saving the plans in the plan directory.
 def run-plan [selection: record, ...extra: string]: nothing -> nothing {
     let units_dir = units-root (project-root)
@@ -173,41 +157,6 @@ def run-validate [selection: record]: nothing -> nothing {
     log info "Terragrunt validate completed"
 }
 
-# Apply the units that have a saved plan.
-def run-apply []: nothing -> nothing {
-    let units_dir = units-root (project-root)
-    let plans = $units_dir | path join $PLAN_DIR
-    let units = glob ($plans | path join $"**/($PLAN_FILE)") --no-dir
-    | each {|file| $file | path dirname | path relative-to $plans }
-    | sort
-
-    if ($units | is-empty) {
-        fail $"No saved plans under ($plans). Run prefrio tf plan first." {
-            command: apply
-            span: (metadata $plans).span
-        }
-    }
-
-    let filters = $units | each {|unit| [--filter $"./($unit)"] } | flatten
-    log info $"Applying: ($units | str join ', ')"
-    let approval = if ($env.TF_AUTO_APPROVE? | is-empty) { [] } else { [--non-interactive] }
-
-    run-command terragrunt ...[
-        run
-        --all
-        --working-dir
-        $units_dir
-        --out-dir
-        $plans
-        ...$approval
-        ...$filters
-        --
-        apply
-    ]
-    clear-plans $plans
-    log info "Terragrunt apply completed"
-}
-
 # Choose one SOPS variables file with a compact fuzzy finder.
 def choose-tfvars-file [root: path]: nothing -> oneof<string, nothing> {
     let files = glob ($root | path join "**/*.tfvars.sops.json") --no-dir --exclude ["**/.terragrunt-cache/**" "**/.terraform/**"] | sort
@@ -232,7 +181,18 @@ def choose-tfvars-file [root: path]: nothing -> oneof<string, nothing> {
 
 # Initialize every Terragrunt unit.
 export def "main tf init" [...extra: string]: nothing -> nothing {
-    run-init ...$extra
+    let units_dir = units-root (project-root)
+    run-command terragrunt ...[
+        run
+        --all
+        --working-dir
+        $units_dir
+        --
+        init
+        -reconfigure
+        ...$extra
+    ]
+    log info "Terragrunt init completed"
 }
 
 # Plan one unit by default, or every unit with --all. --module and --environment narrow the units (--module gcp --environment stg is gcp/stg), and --all takes every unit left. Plans are saved in units/terragrunt.plan.
@@ -299,7 +259,37 @@ export def "main tf scan" [...files: string]: nothing -> nothing {
 
 # Apply the saved plans. Selectors are not accepted here.
 export def "main tf apply" []: nothing -> nothing {
-    run-apply
+    let units_dir = units-root (project-root)
+    let plans = $units_dir | path join $PLAN_DIR
+    let units = glob ($plans | path join $"**/($PLAN_FILE)") --no-dir
+    | each {|file| $file | path dirname | path relative-to $plans }
+    | sort
+
+    if ($units | is-empty) {
+        fail $"No saved plans under ($plans). Run prefrio tf plan first." {
+            command: apply
+            span: (metadata $plans).span
+        }
+    }
+
+    let filters = $units | each {|unit| [--filter $"./($unit)"] } | flatten
+    log info $"Applying: ($units | str join ', ')"
+    let approval = if ($env.TF_AUTO_APPROVE? | is-empty) { [] } else { [--non-interactive] }
+
+    run-command terragrunt ...[
+        run
+        --all
+        --working-dir
+        $units_dir
+        --out-dir
+        $plans
+        ...$approval
+        ...$filters
+        --
+        apply
+    ]
+    clear-plans $plans
+    log info "Terragrunt apply completed"
 }
 
 # Edit a SOPS variables file.
