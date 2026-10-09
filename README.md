@@ -8,6 +8,24 @@ Nix packages for Prefeitura do Rio infrastructure. Each package lives in its own
 
 Every `.nix` file under `pkgs/` is a module that defines an overlay: `overlays.<name> = final: _prev: { <name> = ...; };`. `overlays.nix` loads them all with [import-tree](https://github.com/denful/import-tree), composes them into `overlays.default`, exposes each one as `overlays.<name>`, and builds `packages.<system>` from that same overlay. A file or folder whose name starts with `_` is skipped, so a helper that is not a module must start with `_`.
 
+## Devenv profiles
+
+Each file in `devenv/` is a devenv module that a project can import. A project declares this flake as an input and lists the profiles it wants:
+
+```yaml
+inputs:
+  prefrio:
+    url: github:prefeitura-rio/flakes
+imports:
+  - prefrio/devenv/infra.nix
+```
+
+| Profile                   | Description                                                           |
+| ------------------------- | --------------------------------------------------------------------- |
+| [infra](devenv/infra.nix) | prefrio, `TF_LIB`, and the Terraform, tflint and Terragrunt git hooks |
+
+A profile can use only the inputs that every project declares: `nixpkgs`, `git-hooks` and `prefrio`. Files that belong to a profile, such as `devenv/infra/tflint.hcl`, live in a folder with the profile's name.
+
 ## Development
 
 New to Nix, flakes or devenv? Read [docs/nix.md](docs/nix.md).
