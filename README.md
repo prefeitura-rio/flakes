@@ -20,9 +20,9 @@ imports:
   - prefrio/devenv/infra.nix
 ```
 
-| Profile                   | Description                                                           |
-| ------------------------- | --------------------------------------------------------------------- |
-| [infra](devenv/infra.nix) | prefrio, `TF_LIB`, and the Terraform, tflint and Terragrunt git hooks |
+| Profile                   | Description                                                                |
+| ------------------------- | -------------------------------------------------------------------------- |
+| [infra](devenv/infra.nix) | prefrio, the shared Terragrunt root (`TF_LIB`) and the Terraform git hooks |
 
 A profile can use only the inputs that every project declares: `nixpkgs`, `git-hooks` and `prefrio`.
 
@@ -33,6 +33,7 @@ devenv/
 ├── infra.nix
 └── files/
     └── infra/
+        ├── root.hcl
         └── tflint.hcl
 ```
 
@@ -41,6 +42,17 @@ env.TFLINT_CONFIG_FILE = "${./files/infra}/tflint.hcl";
 ```
 
 The path is a store path once a project imports the profile, so the files are pinned with the lock and cannot change underneath a project.
+
+`TF_LIB` points at `devenv/files/infra`. A Terragrunt unit includes the shared root from there:
+
+```hcl
+include "root" {
+  path   = "${get_env("TF_LIB")}/root.hcl"
+  expose = true
+}
+```
+
+The root finds the project through its `.project.json`, which must define `state_prefix`. Units live in `units/<module>` for a project with one environment, and in `units/<module>/<environment>` otherwise.
 
 ## Development
 
