@@ -20,6 +20,15 @@
       enable = true;
       entry = lib.mkForce "${pkgs.coreutils}/bin/env TFLINT_CONFIG_FILE=${./files/infra}/tflint.hcl ${config.git-hooks.hooks.tflint.package}/bin/tflint";
     };
+    tfsec = {
+      enable = true;
+      name = "tfsec";
+      entry = "${pkgs.prefrio}/bin/prefrio tf scan";
+      files = "(\\.tf|\\.tfsec/config\\.yml)$";
+      language = "system";
+      pass_filenames = true;
+      require_serial = true;
+    };
     terragrunt-format = {
       enable = true;
       name = "terragrunt hcl fmt";
