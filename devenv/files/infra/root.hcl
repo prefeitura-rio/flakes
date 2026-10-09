@@ -14,7 +14,7 @@ locals {
 
   module_dir   = "${local.project_dir}/modules/${local.module}"
   declared     = flatten([for name in fileset(local.module_dir, "*.tf") : regexall("(?m)^variable\\s+\"([^\"]+)\"", file("${local.module_dir}/${name}"))])
-  secrets_file = fileexists("${get_terragrunt_dir()}/terraform.tfvars.sops.json") ? "${get_terragrunt_dir()}/terraform.tfvars.sops.json" : "${local.units_dir}/${local.key == "default" ? "terraform" : local.key}.tfvars.sops.json"
+  secrets_file = fileexists("${get_terragrunt_dir()}/default.tfvars.sops.json") ? "${get_terragrunt_dir()}/default.tfvars.sops.json" : "${local.units_dir}/${local.key}.tfvars.sops.json"
   secrets      = jsondecode(sops_decrypt_file(local.secrets_file))
 
   candidates = merge(local.secrets, {

@@ -43,7 +43,7 @@ def write-project-fixture [directory: path]: nothing -> nothing {
     for unit in [a b] {
         write-file "" ($directory | path join units $unit terragrunt.hcl)
     }
-    write-file "{}" ($directory | path join units a terraform.tfvars.sops.json)
+    write-file "{}" ($directory | path join units a default.tfvars.sops.json)
 }
 
 # Write all fake external commands for an isolated fixture.
@@ -682,11 +682,11 @@ def prefrio-tf-edit-vars-hands-the-only-variables-file-to-sops []: record -> not
     let fixture = $in
     let cache = ($fixture | units-dir) | path join a .terragrunt-cache hash
     try { mkdir $cache } catch {|err| test-error $err.msg }
-    write-file "{}" ($cache | path join terraform.tfvars.sops.json)
+    write-file "{}" ($cache | path join default.tfvars.sops.json)
     let result = run-tf $fixture edit-vars
 
     assert equal $result.exit_code 0 $result.stderr
-    let expected = $fixture | units-dir | path join a terraform.tfvars.sops.json
+    let expected = $fixture | units-dir | path join a default.tfvars.sops.json
     assert equal (read-text $fixture.sops_args | from json) [edit $expected]
 }
 
@@ -700,12 +700,12 @@ def prefrio-tf-edit-vars-needs-one-existing-file []: record -> nothing {
     assert ($missing.exit_code != 0)
     assert ($missing.stderr =~ "SOPS variables file not found")
 
-    write-file "{}" ($units | path join b terraform.tfvars.sops.json)
+    write-file "{}" ($units | path join b default.tfvars.sops.json)
     let several = run-tf $fixture edit-vars
     assert ($several.exit_code != 0)
     assert ($several.stderr =~ "skim plugin is not loaded")
 
-    try { rm --force ($units | path join a terraform.tfvars.sops.json) ($units | path join b terraform.tfvars.sops.json) } catch {|err| test-error $err.msg }
+    try { rm --force ($units | path join a default.tfvars.sops.json) ($units | path join b default.tfvars.sops.json) } catch {|err| test-error $err.msg }
     let none = run-tf $fixture edit-vars
     assert ($none.exit_code != 0)
     assert ($none.stderr =~ "files found under")
