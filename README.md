@@ -4,11 +4,11 @@ Shared Nix packages for Prefeitura do Rio infrastructure projects.
 
 ## prefrio
 
-A Nushell CLI for Terragrunt, SOPS and Kubernetes. A project is a directory with a `.project.nuon`; all its Terraform units live below `units/` in that directory.
+A Nushell CLI for Terragrunt, SOPS and Kubernetes. A project is a directory with a `.project.json`; all its Terraform units live below `units/` in that directory.
 
 ```nu
 prefrio auth                    # Google Cloud login
-prefrio get-kubeconfig          # gcloud container clusters get-credentials, from .project.nuon
+prefrio get-kubeconfig          # gcloud container clusters get-credentials, from .project.json
 prefrio get-kubeconfig -e prod  # choose an environment when the project has several
 prefrio k get pods -n gitlab    # kubectl through the Tailscale K3s API
 prefrio tf init                 # initialize every unit
@@ -37,14 +37,14 @@ The flake has an overlay that adds `pkgs.prefrio`: the CLI together with gcloud,
 
 ### Project file
 
-`prefrio` finds the project by walking up from the current directory to the first `.project.nuon`. Without one it falls back to the Git root, then to the current directory. This lets several projects share one Git repository.
+`prefrio` finds the project by walking up from the current directory to the first `.project.json`. Without one it falls back to the Git root, then to the current directory. This lets several projects share one Git repository.
 
-```nuon
+```json
 {
-  name: superapp
-  env: {
-    stg: {project: rj-superapp-staging, region: us-central1, cluster: application}
-    prod: {project: rj-superapp, region: us-central1, cluster: application}
+  "name": "superapp",
+  "env": {
+    "stg": {"project": "rj-superapp-staging", "region": "us-central1", "cluster": "application"},
+    "prod": {"project": "rj-superapp", "region": "us-central1", "cluster": "application"}
   }
 }
 ```

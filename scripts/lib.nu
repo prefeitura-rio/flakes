@@ -35,9 +35,9 @@ export def run-command [
     {exit_code: $exit_code}
 }
 
-const PROJECT_FILE = ".project.nuon"
+const PROJECT_FILE = ".project.json"
 
-# Find the nearest directory, from the current one upwards, that holds .project.nuon.
+# Find the nearest directory, from the current one upwards, that holds .project.json.
 export def find-project-dir []: nothing -> oneof<path, nothing> {
     mut dir = pwd | path expand
     loop {
@@ -48,7 +48,7 @@ export def find-project-dir []: nothing -> oneof<path, nothing> {
     }
 }
 
-# Return the project root: the directory with .project.nuon, else the Git root, else the current directory.
+# Return the project root: the directory with .project.json, else the Git root, else the current directory.
 export def project-root []: nothing -> path {
     let project = find-project-dir
     if $project != null { return $project }
@@ -56,7 +56,7 @@ export def project-root []: nothing -> path {
     if $result.exit_code == 0 { $result.stdout | str trim } else { pwd | path expand }
 }
 
-# Read the .project.nuon of the current project.
+# Read the .project.json of the current project.
 export def read-project []: nothing -> record {
     let dir = find-project-dir
     if $dir == null {

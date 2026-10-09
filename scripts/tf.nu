@@ -9,7 +9,7 @@ const PLAN_FILE = "tfplan.tfplan"
 def units-root [root: path]: nothing -> string {
     let units_dir = $root | path join units
     if not ($units_dir | path exists) {
-        fail $"The units directory does not exist: ($units_dir). Run prefrio inside a project with a .project.nuon." {
+        fail $"The units directory does not exist: ($units_dir). Run prefrio inside a project with a .project.json." {
             command: terragrunt
             span: (metadata $units_dir).span
         }

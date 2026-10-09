@@ -511,7 +511,7 @@ def prefrio-get-kubeconfig-rejects-an-unusable-project []: record -> nothing {
         {project: (two-environment-project), args: ["--environment" qa], message: "no environment qa"}
         {project: {name: kms, env: {default: {project: rj-iplanrio-dia}}}, args: [], message: "has no cluster"}
         {project: {name: tailscale}, args: [], message: "has no env record"}
-        {project: null, args: [], message: "No .project.nuon found"}
+        {project: null, args: [], message: "No .project.json found"}
         {raw: "{", args: [], message: "Could not read"}
         {raw: "[1, 2]", args: [], message: "must be a record with a name"}
         {raw: "{env: {}}", args: [], message: "must be a record with a name"}
@@ -520,7 +520,7 @@ def prefrio-get-kubeconfig-rejects-an-unusable-project []: record -> nothing {
     for item in ($cases | enumerate) {
         let directory = $fixture.directory | path join $"case($item.index)"
         try { mkdir $directory } catch {|err| test-error $err.msg }
-        if $item.item.raw? != null { write-file $item.item.raw ($directory | path join .project.nuon) }
+        if $item.item.raw? != null { write-file $item.item.raw ($directory | path join .project.json) }
         if $item.item.project? != null { write-project $directory $item.item.project }
         let result = run-get-kubeconfig $fixture $directory ...$item.item.args
 
@@ -644,10 +644,10 @@ def prefrio-auth-runs-gcloud-login-sequence []: record -> nothing {
     assert equal $calls.2? [auth application-default set-quota-project rj-iplanrio-dia]
 }
 
-# Write a .project.nuon into a directory.
+# Write a .project.json into a directory.
 def write-project [directory: path, project: record]: nothing -> nothing {
     mkdir $directory
-    write-file ($project | to nuon) ($directory | path join .project.nuon)
+    write-file ($project | to json) ($directory | path join .project.json)
 }
 
 # Return a project with one GKE environment.

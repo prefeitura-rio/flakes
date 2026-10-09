@@ -5,7 +5,7 @@ use ./lib.nu [run-command fail read-project select-environment]
 const QUOTA_PROJECT = "rj-iplanrio-dia"
 const K3S_API = "https://tailscale-operator-onprem.squirrel-regulus.ts.net"
 
-# Fetch GKE credentials for a cluster of the current project, as described by its .project.nuon.
+# Fetch GKE credentials for a cluster of the current project, as described by its .project.json.
 export def --wrapped "main get-kubeconfig" [
     --environment(-e): string # environment name; optional when the project has only one
     ...extra: string
@@ -14,7 +14,7 @@ export def --wrapped "main get-kubeconfig" [
     let selected = select-environment $project ($environment | default null)
     let cluster = $selected.cluster? | default null
     if $cluster == null or $cluster == "" {
-        fail $"The selected environment of ($project.name) has no cluster in .project.nuon." {
+        fail $"The selected environment of ($project.name) has no cluster in .project.json." {
             command: get-kubeconfig
             span: (metadata $selected).span
         }
