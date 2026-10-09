@@ -1,0 +1,31 @@
+exclude:
+  # No reason recorded (iplan).
+  - google-gke-enable-ip-aliasing
+  # The control plane has no IP endpoint (DNS endpoint only), so authorized networks do not apply (civitas, danfe, superapp).
+  - google-gke-enable-master-networks
+  # Dataplane V2 enforces NetworkPolicy; the legacy network_policy block conflicts with it (caio, civitas, danfe, superapp).
+  - google-gke-enable-network-policy
+  # No reason recorded (iplan).
+  - google-gke-enable-private-cluster
+  # PodSecurityPolicy was removed in Kubernetes 1.25 (caio, civitas, danfe, superapp).
+  - google-gke-enforce-pod-security-policy
+  # Autopilot disables the legacy metadata endpoints itself (caio). No reason recorded for id-carioca and iplan.
+  - google-gke-metadata-endpoints-disabled
+  # Terraform runs outside GCP and needs the IP endpoint; the DNS endpoint returns 403 externally (caio).
+  - google-gke-no-public-control-plane
+  # No reason recorded (iplan).
+  - google-gke-node-pool-uses-cos
+  # Changing the node service account recreates the node pools (caio, civitas, danfe, superapp).
+  - google-gke-use-service-account
+  # No reason recorded (iplan).
+  - google-iam-no-privileged-service-accounts
+  # tfsec 1.28 only recognizes the deprecated require_ssl, not ssl_mode (caio, civitas, danfe, superapp).
+  - google-sql-encrypt-in-transit-data
+  # Clients still connect through the public address; moving them to private IP is a separate change (danfe, superapp). No reason recorded for iplan.
+  - google-sql-no-public-access
+  # Needs a customer-managed KMS key per project, which is not provisioned (civitas, danfe, superapp).
+  - google-storage-bucket-encryption-customer-key
+  # Uploads rely on object ACLs (x-goog-acl), so uniform bucket-level access would break them (superapp).
+  - google-storage-enable-ubla
+  # No reason recorded (iplan).
+  - google-storage-no-public-access

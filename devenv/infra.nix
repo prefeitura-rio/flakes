@@ -24,7 +24,7 @@
       enable = true;
       name = "tfsec";
       entry = "${pkgs.prefrio}/bin/prefrio tf scan";
-      files = "(\\.tf|\\.tfsec/config\\.yml)$";
+      files = "\\.tf$";
       language = "system";
       pass_filenames = true;
       require_serial = true;
