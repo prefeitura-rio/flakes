@@ -10,6 +10,8 @@ Every `.nix` file under `pkgs/` is a module that defines an overlay: `overlays.<
 
 ## Development
 
+New to Nix, flakes or devenv? Read [docs/nix.md](docs/nix.md).
+
 `flake.nix` has no development shell. Work in the devenv environment, which brings Nushell, nu-lint, nixfmt and the test runner:
 
 ```bash
