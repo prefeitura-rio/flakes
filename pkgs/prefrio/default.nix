@@ -20,6 +20,7 @@
           opentofu
           sops
           terragrunt
+          tfsec
         ];
 
         nu = nushell.withPlugins [ nushellPlugins.skim ];

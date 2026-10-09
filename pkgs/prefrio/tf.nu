@@ -1,5 +1,5 @@
 use std/log
-use ./lib.nu [run-command fail is-file project-root]
+use ./lib.nu [run-command fail is-file project-root find-project-dir]
 
 const SKIM_HEIGHT = "40%"
 const PLAN_DIR = "terragrunt.plan"
@@ -181,6 +181,32 @@ def run-validate [selection: record]: nothing -> nothing {
     log info "Terragrunt validate completed"
 }
 
+# Return a path relative to the current directory when it is inside it, and the path itself otherwise.
+def display-path []: path -> string {
+    let path = $in
+    let base = pwd | path expand
+    if $path == $base { return . }
+    try { $path | path relative-to $base } catch { $path }
+}
+
+# List the projects that own the given files, in the order they first appear. Files outside every project are ignored.
+def projects-of []: list<string> -> list<path> {
+    each {|file| find-project-dir ($file | path expand | path dirname) }
+    | where $it != null
+    | uniq
+}
+
+# Run tfsec on a project folder and return its exit code.
+def scan-project []: string -> int {
+    let project = $in
+    try {
+        tfsec --no-color --concise-output --ignore-hcl-errors $project
+        0
+    } catch {
+        $env.LAST_EXIT_CODE
+    }
+}
+
 # Apply the units that have a saved plan. The plan directory records what was planned.
 def run-apply []: nothing -> nothing {
     let units_dir = units-root (project-root)
@@ -283,6 +309,30 @@ export def "main tf validate" [--module(-m): string, --environment(-e): string]:
     }
 
     run-validate $selection
+}
+
+# Run tfsec on every project that owns one of the given files, or on the current project without files. Every project is scanned before the command fails.
+export def "main tf scan" [...files: string]: nothing -> nothing {
+    let projects = if ($files | is-empty) {
+        let project = find-project-dir
+        if $project == null {
+            fail $"No .project.json found in (pwd) or any parent directory. Run prefrio inside a project." {
+                command: scan
+                span: (metadata $files).span
+            }
+        }
+        [$project]
+    } else {
+        $files | projects-of
+    }
+
+    let failed = $projects
+    | each { display-path }
+    | where ($it | scan-project) != 0
+
+    if ($failed | is-not-empty) {
+        fail $"tfsec reported problems in: ($failed | str join ', ')" {command: scan span: (metadata $files).span}
+    }
 }
 
 # Apply the saved plans. Selectors are not accepted here.

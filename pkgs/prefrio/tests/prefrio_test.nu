@@ -52,6 +52,7 @@ def write-fake-tools [bin: path]: nothing -> nothing {
     write-fake-terragrunt ($bin | path join terragrunt)
     write-fake-kubectl ($bin | path join kubectl)
     write-fake-gcloud ($bin | path join gcloud)
+    write-fake-tfsec ($bin | path join tfsec)
 }
 
 # Create an isolated project fixture with fake external commands.
@@ -73,6 +74,7 @@ def make-fixture []: nothing -> record {
         kubectl_args: ($directory | path join kubectl-args.json),
         gcloud_args: ($directory | path join gcloud-args.json),
         sops_args: ($directory | path join sops-args.json),
+        tfsec_args: ($directory | path join tfsec-args.json),
         path: ($env.PATH? | default [])
     }
 }
@@ -120,6 +122,18 @@ def --wrapped main [...args: string] {
     make-executable $path
 }
 
+# Write a fake tfsec executable that records every call and fails for the path in FAKE_TFSEC_FAIL.
+def write-fake-tfsec [path: path]: nothing -> nothing {
+    write-file "#!/usr/bin/env -S nu
+def --wrapped main [...args: string] {
+    let calls = if ($env.TFSEC_ARGS_FILE | path exists) { open --raw $env.TFSEC_ARGS_FILE | from json } else { [] }
+    $calls | append [$args] | to json | save --force $env.TFSEC_ARGS_FILE
+    exit (if ($args | last) == ($env.FAKE_TFSEC_FAIL? | default null) { 1 } else { 0 })
+}
+" $path
+    make-executable $path
+}
+
 # Make a fixture executable.
 def make-executable [path: path]: nothing -> nothing {
     let result = chmod +x $path | complete
@@ -134,6 +148,7 @@ def fixture-env [fixture: record]: nothing -> record {
         KUBECTL_ARGS_FILE: $fixture.kubectl_args
         GCLOUD_ARGS_FILE: $fixture.gcloud_args
         SOPS_ARGS_FILE: $fixture.sops_args
+        TFSEC_ARGS_FILE: $fixture.tfsec_args
     }
 }
 
@@ -971,4 +986,102 @@ def prefrio-tf-validate-rejects-selectors-that-match-no-unit []: record -> nothi
     assert ($result.exit_code != 0)
     assert str contains $result.stderr "nowhere is not a unit or module"
     assert (not ($fixture.terragrunt_args | path exists))
+}
+
+# Read the tfsec calls recorded by the fake executable.
+def read-tfsec-calls [fixture: record]: nothing -> list<list<string>> {
+    try { read-text $fixture.tfsec_args | from json } catch {|err| test-error $err.msg }
+}
+
+# Return the arguments prefrio gives tfsec for one project folder.
+def tfsec-call [project: string]: nothing -> list<string> {
+    [--no-color --concise-output --ignore-hcl-errors $project]
+}
+
+# Verify scan runs tfsec once for each project that owns a file, in the order the projects first appear.
+@test
+def prefrio-tf-scan-scans-each-project-once []: record -> nothing {
+    let fixture = $in
+    write-project ($fixture.directory | path join a) (single-project)
+    write-project ($fixture.directory | path join b) (single-project)
+    let result = run-tf $fixture scan a/modules/x.tf a/units/y.tf b/modules/z.tf
+
+    assert equal $result.exit_code 0 $result.stderr
+    assert equal (read-tfsec-calls $fixture) [(tfsec-call a) (tfsec-call b)]
+}
+
+# Verify scan finds the project above a file, so a repository with one project at its root works.
+@test
+def prefrio-tf-scan-finds-the-project-above-the-file []: record -> nothing {
+    let fixture = $in
+    write-project $fixture.directory (single-project)
+    let result = run-tf $fixture scan modules/gke/main.tf
+
+    assert equal $result.exit_code 0 $result.stderr
+    assert equal (read-tfsec-calls $fixture) [(tfsec-call .)]
+}
+
+# Verify the nearest project wins when projects are nested.
+@test
+def prefrio-tf-scan-uses-the-nearest-project []: record -> nothing {
+    let fixture = $in
+    write-project $fixture.directory (single-project)
+    write-project ($fixture.directory | path join a) (single-project)
+    let result = run-tf $fixture scan a/modules/x.tf
+
+    assert equal $result.exit_code 0 $result.stderr
+    assert equal (read-tfsec-calls $fixture) [(tfsec-call a)]
+}
+
+# Verify files outside every project are ignored.
+@test
+def prefrio-tf-scan-ignores-files-outside-a-project []: record -> nothing {
+    let fixture = $in
+    write-project ($fixture.directory | path join a) (single-project)
+    let result = run-tf $fixture scan loose/x.tf
+
+    assert equal $result.exit_code 0 $result.stderr
+    assert (not ($fixture.tfsec_args | path exists)) "tfsec ran for a file outside every project."
+}
+
+# Verify scan checks every project before it fails, and names the projects that failed.
+@test
+def prefrio-tf-scan-scans-every-project-then-fails []: record -> nothing {
+    let fixture = $in
+    write-project ($fixture.directory | path join a) (single-project)
+    write-project ($fixture.directory | path join b) (single-project)
+    let result = run-module {
+        fixture: $fixture
+        module: $TF_SCRIPT
+        command: [tf]
+        directory: $fixture.directory
+        env: {FAKE_TFSEC_FAIL: a}
+    } scan a/x.tf b/y.tf
+
+    assert not equal $result.exit_code 0
+    assert equal (read-tfsec-calls $fixture) [(tfsec-call a) (tfsec-call b)]
+    assert ($result.stderr =~ 'problems in: a\b') $result.stderr
+    assert ($result.stderr !~ 'problems in: a, b') "The passing project was reported as failed."
+}
+
+# Verify scan without files checks the project of the current directory.
+@test
+def prefrio-tf-scan-without-files-scans-the-current-project []: record -> nothing {
+    let fixture = $in
+    write-project $fixture.directory (single-project)
+    let result = run-tf $fixture scan
+
+    assert equal $result.exit_code 0 $result.stderr
+    assert equal (read-tfsec-calls $fixture) [(tfsec-call .)]
+}
+
+# Verify scan without files fails outside a project.
+@test
+def prefrio-tf-scan-without-files-fails-outside-a-project []: record -> nothing {
+    let fixture = $in
+    let result = run-tf $fixture scan
+
+    assert not equal $result.exit_code 0
+    assert ($result.stderr =~ 'No \.project\.json') $result.stderr
+    assert (not ($fixture.tfsec_args | path exists)) "tfsec ran outside a project."
 }
