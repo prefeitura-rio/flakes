@@ -21,6 +21,20 @@ prefrio tf apply                # apply the last generated plan
 prefrio tf edit-vars [file]
 ```
 
+### Use in devenv
+
+The flake has an overlay that adds `pkgs.prefrio`: the CLI together with gcloud, kubectl, OpenTofu, SOPS and Terragrunt, all built with the nixpkgs of the consumer.
+
+```nix
+{ pkgs, inputs, ... }:
+{
+  overlays = [ inputs.prefrio.overlays.default ];
+  packages = [ pkgs.prefrio ];
+}
+```
+
+`nix run` and `packages.<system>.prefrio` give the CLI alone, with its tools only inside its own `PATH`.
+
 ### Project file
 
 `prefrio` finds the project by walking up from the current directory to the first `.project.nuon`. Without one it falls back to the Git root, then to the current directory. This lets several projects share one Git repository.

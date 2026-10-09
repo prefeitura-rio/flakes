@@ -13,7 +13,23 @@
 
   outputs =
     inputs:
-    inputs.flake-utils.lib.eachDefaultSystem (
+    {
+      overlays.default =
+        final: _prev:
+        let
+          built = import ./packages.nix { pkgs = final; };
+        in
+        {
+          prefrio = final.buildEnv {
+            name = "prefrio";
+            paths = [
+              built.prefrio
+              built.deps
+            ];
+          };
+        };
+    }
+    // inputs.flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = import inputs.nixpkgs { inherit system; };
