@@ -25,21 +25,6 @@ def unit-names [units_dir: path]: nothing -> list<string> {
     | sort
 }
 
-# Keep the units of an environment. A unit is <module>/<environment>, so the environment is the second folder.
-def units-of-environment [units: list<string>, environment: oneof<string, nothing>]: nothing -> list<string> {
-    if $environment == null { return $units }
-    $units | where {
-        let parts = $in | path split
-        ($parts | length) == 2 and $parts.1? == $environment
-    }
-}
-
-# Keep the units that are the module itself or sit inside the module folder.
-def units-of-module [units: list<string>, module: oneof<string, nothing>]: nothing -> list<string> {
-    if $module == null { return $units }
-    $units | where $it == $module or ($it | path split | first) == $module
-}
-
 # List the units that match the environment and module selectors, failing when none do.
 def candidate-units [units_dir: path, selection: record]: nothing -> list<string> {
     let environment = $selection.environment
@@ -52,7 +37,13 @@ def candidate-units [units_dir: path, selection: record]: nothing -> list<string
         }
     }
 
-    let in_environment = units-of-environment $all_units $environment
+    # A unit is <module>/<environment>, so the environment is the second folder.
+    let in_environment = if $environment == null { $all_units } else {
+        $all_units | where {
+            let parts = $in | path split
+            ($parts | length) == 2 and $parts.1? == $environment
+        }
+    }
     if ($in_environment | is-empty) {
         fail $"No unit belongs to the ($environment) environment under ($units_dir)." {
             command: terragrunt
@@ -60,7 +51,10 @@ def candidate-units [units_dir: path, selection: record]: nothing -> list<string
         }
     }
 
-    let matching = units-of-module $in_environment $module
+    # Keep the units that are the module itself or sit inside the module folder.
+    let matching = if $module == null { $in_environment } else {
+        $in_environment | where $it == $module or ($it | path split | first) == $module
+    }
     if ($matching | is-empty) {
         let scope = if $environment == null { $"under ($units_dir)" } else { $"in the ($environment) environment" }
         fail $"($module) is not a unit or module ($scope). Available: ($in_environment | str join ', ')." {
@@ -181,30 +175,11 @@ def run-validate [selection: record]: nothing -> nothing {
     log info "Terragrunt validate completed"
 }
 
-# Return a path relative to the current directory when it is inside it, and the path itself otherwise.
-def display-path []: path -> string {
-    let path = $in
-    let base = pwd | path expand
-    if $path == $base { return . }
-    try { $path | path relative-to $base } catch { $path }
-}
-
 # List the projects that own the given files, in the order they first appear. Files outside every project are ignored.
 def projects-of []: list<string> -> list<path> {
     each {|file| find-project-dir ($file | path expand | path dirname) }
     | where $it != null
     | uniq
-}
-
-# Run tfsec on a project folder and return its exit code.
-def scan-project []: string -> int {
-    let project = $in
-    try {
-        tfsec --no-color --concise-output --ignore-hcl-errors $project
-        0
-    } catch {
-        $env.LAST_EXIT_CODE
-    }
 }
 
 # Apply the units that have a saved plan. The plan directory records what was planned.
@@ -326,9 +301,21 @@ export def "main tf scan" [...files: string]: nothing -> nothing {
         $files | projects-of
     }
 
+    let base = pwd | path expand
     let failed = $projects
-    | each { display-path }
-    | where ($it | scan-project) != 0
+    | each {|project|
+        if $project == $base { "." } else { try { $project | path relative-to $base } catch { $project } }
+    }
+    | where {
+        let project = $in
+        let exit_code = try {
+            tfsec --no-color --concise-output --ignore-hcl-errors $project
+            0
+        } catch {
+            $env.LAST_EXIT_CODE
+        }
+        $exit_code != 0
+    }
 
     if ($failed | is-not-empty) {
         fail $"tfsec reported problems in: ($failed | str join ', ')" {command: scan span: (metadata $files).span}
