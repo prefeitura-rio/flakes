@@ -237,9 +237,13 @@ export def "main tf validate" [--module(-m): string, --environment(-e): string]:
     run-validate $selection
 }
 
-# Run tfsec on every project that owns one of the given files, or on the current project without files. Every project is scanned before the command fails.
+# Run tfsec with the central config on every project that owns one of the given files, or on the current project without files. Every project is scanned before the command fails.
 export def "main tf scan" [...files: string]: nothing -> nothing {
     let span = (metadata $files).span
+    if ($env.TF_LIB? | is-empty) {
+        fail "TF_LIB is not set. Run prefrio inside the infra devenv, which provides the central tfsec config." {command: scan span: $span}
+    }
+    let config = $env.TF_LIB | path join tfsec.yml
     let dirs = if ($files | is-empty) { [(pwd)] } else { $files | path expand | path dirname }
     let projects = $dirs | each {|dir| find-project-dir $dir } | where $it != null | uniq
 
@@ -250,7 +254,7 @@ export def "main tf scan" [...files: string]: nothing -> nothing {
     let base = pwd | path expand
     let failed = $projects
     | each {|project| try { $project | path relative-to $base | default --empty . } catch { $project } }
-    | where { try { tfsec --no-color --concise-output --ignore-hcl-errors $in; false } catch { true } }
+    | where { try { tfsec --no-color --concise-output --ignore-hcl-errors --config-file $config $in; false } catch { true } }
 
     if ($failed | is-not-empty) {
         fail $"tfsec reported problems in: ($failed | str join ', ')" {command: scan span: $span}

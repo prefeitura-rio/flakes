@@ -146,6 +146,7 @@ def fixture-env [fixture: record]: nothing -> record {
     {
         PATH: ([$fixture.bin] | append $fixture.path),
         TERRAGRUNT_ARGS_FILE: $fixture.terragrunt_args
+        TF_LIB: ($fixture.directory | path join lib)
         KUBECTL_ARGS_FILE: $fixture.kubectl_args
         GCLOUD_ARGS_FILE: $fixture.gcloud_args
         SOPS_ARGS_FILE: $fixture.sops_args
@@ -995,8 +996,15 @@ def read-tfsec-calls [fixture: record]: nothing -> list<list<string>> {
 }
 
 # Return the arguments prefrio gives tfsec for one project folder.
-def tfsec-call [project: string]: nothing -> list<string> {
-    [--no-color --concise-output --ignore-hcl-errors $project]
+def tfsec-call [fixture: record, project: string]: nothing -> list<string> {
+    [
+        --no-color
+        --concise-output
+        --ignore-hcl-errors
+        --config-file
+        ($fixture.directory | path join lib tfsec.yml)
+        $project
+    ]
 }
 
 # Verify scan runs tfsec once per project, in the order the projects first appear.
@@ -1008,7 +1016,7 @@ def prefrio-tf-scan-scans-each-project-once []: record -> nothing {
     let result = run-tf $fixture scan a/modules/x.tf a/units/y.tf b/modules/z.tf
 
     assert equal $result.exit_code 0 $result.stderr
-    assert equal (read-tfsec-calls $fixture) [(tfsec-call a) (tfsec-call b)]
+    assert equal (read-tfsec-calls $fixture) [(tfsec-call $fixture a) (tfsec-call $fixture b)]
 }
 
 # Verify scan finds the project above a file, so a repository with one project at its root works.
@@ -1019,7 +1027,7 @@ def prefrio-tf-scan-finds-the-project-above-the-file []: record -> nothing {
     let result = run-tf $fixture scan modules/gke/main.tf
 
     assert equal $result.exit_code 0 $result.stderr
-    assert equal (read-tfsec-calls $fixture) [(tfsec-call .)]
+    assert equal (read-tfsec-calls $fixture) [(tfsec-call $fixture .)]
 }
 
 # Verify the nearest project wins when projects are nested.
@@ -1031,7 +1039,7 @@ def prefrio-tf-scan-uses-the-nearest-project []: record -> nothing {
     let result = run-tf $fixture scan a/modules/x.tf
 
     assert equal $result.exit_code 0 $result.stderr
-    assert equal (read-tfsec-calls $fixture) [(tfsec-call a)]
+    assert equal (read-tfsec-calls $fixture) [(tfsec-call $fixture a)]
 }
 
 # Verify files outside every project are ignored.
@@ -1060,7 +1068,7 @@ def prefrio-tf-scan-scans-every-project-then-fails []: record -> nothing {
     } scan a/x.tf b/y.tf
 
     assert not equal $result.exit_code 0
-    assert equal (read-tfsec-calls $fixture) [(tfsec-call a) (tfsec-call b)]
+    assert equal (read-tfsec-calls $fixture) [(tfsec-call $fixture a) (tfsec-call $fixture b)]
     assert ($result.stderr =~ 'problems in: a\b') $result.stderr
     assert ($result.stderr !~ 'problems in: a, b') "The passing project was reported as failed."
 }
@@ -1073,7 +1081,7 @@ def prefrio-tf-scan-without-files-scans-the-current-project []: record -> nothin
     let result = run-tf $fixture scan
 
     assert equal $result.exit_code 0 $result.stderr
-    assert equal (read-tfsec-calls $fixture) [(tfsec-call .)]
+    assert equal (read-tfsec-calls $fixture) [(tfsec-call $fixture .)]
 }
 
 # Verify scan without files fails outside a project.
@@ -1085,4 +1093,22 @@ def prefrio-tf-scan-without-files-fails-outside-a-project []: record -> nothing 
     assert not equal $result.exit_code 0
     assert ($result.stderr =~ 'No \.project\.json') $result.stderr
     assert (not ($fixture.tfsec_args | path exists)) "tfsec ran outside a project."
+}
+
+# Verify scan fails, and runs nothing, when TF_LIB does not point at the central tfsec config.
+@test
+def prefrio-tf-scan-fails-without-tf-lib []: record -> nothing {
+    let fixture = $in
+    write-project ($fixture.directory | path join a) (single-project)
+    let result = run-module {
+        fixture: $fixture
+        module: $TF_SCRIPT
+        command: [tf]
+        directory: $fixture.directory
+        env: {TF_LIB: ""}
+    } scan a/x.tf
+
+    assert not equal $result.exit_code 0
+    assert ($result.stderr =~ TF_LIB) $result.stderr
+    assert (not ($fixture.tfsec_args | path exists)) "tfsec ran without the central config."
 }
