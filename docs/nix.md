@@ -99,32 +99,12 @@ nix-env --install --attr bashInteractive -f https://github.com/NixOS/nixpkgs/tar
 
 The `nix` command and flakes are experimental features, off by default, and the installers above do not enable them. Until you enable them, `nix` commands fail with `experimental Nix feature 'nix-command' is disabled`.
 
-For a single command, pass the option:
-
-```bash
-nix --experimental-features 'nix-command flakes' flake check
-```
-
-To enable them for your user, add one line to `~/.config/nix/nix.conf`. Use `/etc/nix/nix.conf` instead to enable them for every user:
+To enable flakes, run:
 
 ```bash
 mkdir -p ~/.config/nix
 echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
 ```
-
-If the file already has an `experimental-features` line, add `nix-command` and `flakes` to that line instead. On NixOS or Home Manager, set the option in your configuration:
-
-```nix
-nix.settings.experimental-features = [ "nix-command" "flakes" ];
-```
-
-Check it in a new terminal. The output must include `flakes` and `nix-command`:
-
-```bash
-nix config show experimental-features
-```
-
-Reference: [Flakes on the NixOS Wiki](https://wiki.nixos.org/wiki/Flakes) and [nix.conf in the Nix manual](https://nix.dev/manual/nix/stable/command-ref/conf-file.html).
 
 ### 3. Install devenv
 
@@ -139,16 +119,6 @@ nix-env --upgrade --attr devenv -f https://github.com/NixOS/nixpkgs/tarball/nixp
 ```
 
 Check it with `devenv --version`. Then `devenv shell` in this repository gives you the development environment.
-
-## Working on it
-
-```bash
-devenv shell                    # Nushell, nu-lint, nixfmt and the test runner
-devenv tasks run prefrio:test   # tests of one package
-devenv tasks run pkgs:test      # tests of every package
-```
-
-The tests use [nutest](https://github.com/vyadh/nutest), which devenv provides through `NU_LIB_DIRS`. nixfmt runs as a git hook.
 
 ### Conventions
 
