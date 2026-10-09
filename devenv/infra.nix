@@ -8,7 +8,7 @@
 {
   overlays = [ inputs.prefrio.overlays.default ];
 
-  env.TF_LIB = toString ./files/infra;
+  env.TF_LIB = "${./files/infra}";
   env.TFLINT_CONFIG_FILE = "${./files/infra}/tflint.hcl";
 
   packages = [ pkgs.prefrio ];
