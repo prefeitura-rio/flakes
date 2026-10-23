@@ -1,6 +1,5 @@
-use std/log
 use ./tf.nu *
-use ./lib.nu [run-command fail read-project select-environment]
+use ./lib.nu [run-command fail read-project select-environment say ok]
 
 const QUOTA_PROJECT = "rj-iplanrio-dia"
 const K3S_API = "https://tailscale-operator-onprem.squirrel-regulus.ts.net"
@@ -37,11 +36,11 @@ export def --wrapped "main get-kubeconfig" [
 
 # Authenticate with Google Cloud and set the quota project.
 export def "main auth" []: nothing -> nothing {
-    log info "Authenticating with Google Cloud..."
+    say "Authenticating with Google Cloud..."
     run-command gcloud ...[auth login]
     run-command gcloud ...[auth application-default login]
     run-command gcloud ...[auth application-default set-quota-project $QUOTA_PROJECT]
-    log info "Authentication completed"
+    ok "Authentication completed"
 }
 
 # Run kubectl against the K3s API through Tailscale, which identifies the caller. KUBE_HOST overrides the server.

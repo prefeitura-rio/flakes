@@ -1,10 +1,17 @@
 # nu-lint-ignore-file: external_script_as_argument, exit_only_in_main
 
-use std/log
+# Print a status line to stderr, so stdout stays clean for pipes.
+export def say [message: string]: nothing -> nothing {
+    print --stderr $message
+}
 
-# Raise a labelled error after logging it.
+# Print a green success line to stderr.
+export def ok [message: string]: nothing -> nothing {
+    print --stderr $"(ansi green)($message)(ansi reset)"
+}
+
+# Raise a labelled error.
 export def fail [message: string, context: record<command: string, span: record>]: nothing -> error {
-    log error $message
     error make {
         msg: $message
         label: {text: $context.command, span: $context.span}

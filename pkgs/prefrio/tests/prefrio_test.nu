@@ -159,12 +159,12 @@ def stdin-of [context: record]: nothing -> string {
     if "stdin" in $context { $context.stdin } else { "" }
 }
 
-# Run a module command in an isolated fixture.
+# Run a module command in an isolated fixture. The plain error style keeps each message on one line.
 def run-module [context: record, ...args: string]: nothing -> record {
     let command = $context.command
     | append $args
     | str join " "
-    let source = $"use ($context.module) *; main ($command)"
+    let source = $"$env.config.error_style = \"plain\"; use ($context.module) *; main ($command)"
     with-env (fixture-env $context.fixture | merge ($context.env? | default {})) {
         try {
             cd $context.directory
@@ -732,6 +732,7 @@ def prefrio-auth-runs-gcloud-login-sequence []: record -> nothing {
     assert equal $calls.0? [auth login]
     assert equal $calls.1? [auth application-default login]
     assert equal $calls.2? [auth application-default set-quota-project rj-iplanrio-dia]
+    assert ($result.stderr =~ "Authentication completed")
 }
 
 # Write a .project.json into a directory.
@@ -920,6 +921,7 @@ def run-command-reports-failing-exit-code []: record -> nothing {
 
     assert ($result.exit_code != 0)
     assert ($result.stderr =~ "exit 3")
+    assert equal ($result.stderr | split row "Command failed" | length) 2 "The error appeared more than once."
 }
 
 # Verify validate checks the inputs of every unit and then validates every unit.

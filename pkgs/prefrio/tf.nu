@@ -1,5 +1,4 @@
-use std/log
-use ./lib.nu [run-command fail is-file project-root find-project-dir]
+use ./lib.nu [run-command fail is-file project-root find-project-dir say ok]
 
 const SKIM_HEIGHT = "40%"
 const PLAN_DIR = "terragrunt.plan"
@@ -124,7 +123,7 @@ def run-plan [selection: record, ...extra: string]: nothing -> nothing {
         plan
         ...$extra
     ]
-    log info "Terragrunt plan completed"
+    ok "Terragrunt plan completed"
 }
 
 # Check the inputs, then validate the chosen units with OpenTofu.
@@ -154,7 +153,7 @@ def run-validate [selection: record]: nothing -> nothing {
         --
         validate
     ]
-    log info "Terragrunt validate completed"
+    ok "Terragrunt validate completed"
 }
 
 # Choose one SOPS variables file with a compact fuzzy finder.
@@ -192,7 +191,7 @@ export def "main tf init" [...extra: string]: nothing -> nothing {
         -reconfigure
         ...$extra
     ]
-    log info "Terragrunt init completed"
+    ok "Terragrunt init completed"
 }
 
 # Plan one unit by default, or every unit with --all. --module and --environment narrow the units (--module gcp --environment stg is gcp/stg), and --all takes every unit left. Plans are saved in units/terragrunt.plan.
@@ -286,7 +285,7 @@ export def "main tf apply" []: nothing -> nothing {
     }
 
     let filters = $units | each {|unit| [--filter $"./($unit)"] } | flatten
-    log info $"Applying: ($units | str join ', ')"
+    say $"Applying: ($units | str join ', ')"
     let approval = if ($env.TF_AUTO_APPROVE? | is-empty) { [] } else { [--non-interactive] }
 
     run-command terragrunt ...[
@@ -302,7 +301,7 @@ export def "main tf apply" []: nothing -> nothing {
         apply
     ]
     clear-plans $plans
-    log info "Terragrunt apply completed"
+    ok "Terragrunt apply completed"
 }
 
 # Edit a SOPS variables file.
@@ -312,7 +311,7 @@ export def "main tf edit-vars" [file?: path]: nothing -> nothing {
         $file | path expand
     } else { choose-tfvars-file $root }
     if $sops_file == null {
-        log info "No variables file selected"
+        say "No variables file selected"
         return
     }
     if not (is-file $sops_file) {
@@ -323,8 +322,8 @@ export def "main tf edit-vars" [file?: path]: nothing -> nothing {
     }
     let result = run-command --allow-exit-code 200 sops ...[edit $sops_file]
     if $result.exit_code == 200 {
-        log info "No variable changes to save"
+        say "No variable changes to save"
         return
     }
-    log info "Variables file edited"
+    ok "Variables file edited"
 }
