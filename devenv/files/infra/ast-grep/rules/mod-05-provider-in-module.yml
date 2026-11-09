@@ -1,0 +1,10 @@
+id: mod-05-provider-in-module
+language: hcl
+severity: error
+message: MOD-05 Configure no provider in a module.
+files:
+  - "**/modules/**/*.tf"
+rule:
+  all:
+    - kind: block
+    - regex: '^provider\s+"'

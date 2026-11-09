@@ -1,0 +1,24 @@
+id: tg-03-standard-unit
+valid:
+  - |
+    terraform {
+      source = "../../modules/gcp"
+    }
+  - |
+    include "root" {
+      path = "root.hcl"
+    }
+    inputs = {}
+invalid:
+  - |
+    include "root" {
+      path = "root.hcl"
+    }
+    terraform {
+      source = "../../modules/gcp"
+    }
+  - |
+    include "root" {
+      path = "root.hcl"
+    }
+    project_id = "project"

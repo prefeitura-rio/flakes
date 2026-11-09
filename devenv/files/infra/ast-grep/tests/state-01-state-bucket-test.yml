@@ -1,0 +1,15 @@
+id: state-01-state-bucket
+valid:
+  - |
+    remote_state {
+      config = {
+        bucket = "iplanrio-terraform-state"
+      }
+    }
+invalid:
+  - |
+    remote_state {
+      config = {
+        bucket = "other-state"
+      }
+    }

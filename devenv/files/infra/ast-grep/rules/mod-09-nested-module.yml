@@ -1,0 +1,11 @@
+id: mod-09-nested-module
+language: hcl
+severity: error
+message: MOD-09 Do not add a nested module below modules/gcp or modules/k8s.
+files:
+  - "**/modules/gcp/**/*.tf"
+  - "**/modules/k8s/**/*.tf"
+rule:
+  all:
+    - kind: attribute
+    - regex: '^source\s*=\s*"\./'

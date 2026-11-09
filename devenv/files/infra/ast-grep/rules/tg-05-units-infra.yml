@@ -1,0 +1,8 @@
+id: tg-05-units-infra
+language: hcl
+severity: error
+message: TG-05 Do not create units/infra.
+files:
+  - "**/units/infra/**/*.hcl"
+rule:
+  kind: config_file

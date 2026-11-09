@@ -1,0 +1,8 @@
+id: dev-05-tflint-config
+language: hcl
+severity: error
+message: DEV-05 Keep tflint configuration in the shared profile.
+files:
+  - "**/.tflint.hcl"
+rule:
+  kind: config_file

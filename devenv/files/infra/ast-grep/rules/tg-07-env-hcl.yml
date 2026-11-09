@@ -1,0 +1,8 @@
+id: tg-07-env-hcl
+language: hcl
+severity: error
+message: TG-07 Do not create env.hcl.
+files:
+  - "**/env.hcl"
+rule:
+  kind: config_file

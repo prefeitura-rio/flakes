@@ -1,0 +1,8 @@
+id: iam-02-project-iam-binding
+snapshots:
+  "resource \"google_project_iam_binding\" \"readers\" {}":
+    labels:
+    - source: resource "google_project_iam_binding" "readers" {}
+      style: primary
+      start: 0
+      end: 50

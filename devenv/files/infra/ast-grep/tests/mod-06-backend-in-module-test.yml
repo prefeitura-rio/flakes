@@ -1,0 +1,5 @@
+id: mod-06-backend-in-module
+valid:
+  - 'terraform { required_providers {} }'
+invalid:
+  - 'backend "gcs" {}'

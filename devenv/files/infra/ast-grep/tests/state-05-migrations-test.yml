@@ -1,0 +1,9 @@
+id: state-05-migrations
+valid:
+  - |
+    removed {
+      from = google_storage_bucket.old
+      lifecycle { destroy = false }
+    }
+invalid:
+  - 'resource "google_storage_bucket" "bucket" {}'

@@ -1,0 +1,8 @@
+id: mod-11-client-config-in-main
+snapshots:
+  "data \"google_client_config\" \"current\" {}\n":
+    labels:
+    - source: data "google_client_config" "current" {}
+      style: primary
+      start: 0
+      end: 40

@@ -22,7 +22,7 @@ imports:
 
 | Profile                   | Description                                                                                                     |
 | ------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| [infra](devenv/infra.nix) | prefrio, `TF_LIB` with the shared Terragrunt root and the tflint and tfsec configs, and the Terraform git hooks |
+| [infra](devenv/infra.nix) | prefrio, `TF_LIB` with the shared Terragrunt root, ast-grep, tflint and tfsec configs, and the Terraform git hooks |
 
 A profile can use only the inputs that every project declares: `nixpkgs`, `git-hooks` and `prefrio`.
 
@@ -33,6 +33,7 @@ devenv/
 ├── infra.nix
 └── files/
     └── infra/
+        ├── ast-grep/
         ├── root.hcl
         ├── tflint.hcl
         └── tfsec.yml
@@ -56,6 +57,8 @@ include "root" {
 The root finds the project through its `.project.json`, which must define `state_prefix`. Units live in `units/<module>` for a project with one environment, and in `units/<module>/<environment>` otherwise.
 
 `tflint.hcl` and `tfsec.yml` are the only tflint and tfsec configs. `prefrio tf scan` passes `tfsec.yml` to tfsec, so an exclusion applies to every project and a project does not carry its own `.tfsec/config.yml`.
+
+The `ast-grep/` directory holds structural rules, tests and snapshots for every infrastructure repository that imports this profile. Add a test with each rule. Run `ast-grep test --config devenv/files/infra/ast-grep/sgconfig.yml` in this repository. In an importing repository, run `ast-grep scan --config $TF_LIB/ast-grep/sgconfig.yml --no-ignore hidden`.
 
 ## Development
 

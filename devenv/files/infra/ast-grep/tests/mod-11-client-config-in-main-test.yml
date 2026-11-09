@@ -1,0 +1,4 @@
+id: mod-11-client-config-in-main
+invalid:
+  - |
+    data "google_client_config" "current" {}

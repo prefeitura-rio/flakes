@@ -1,0 +1,5 @@
+id: mod-07-google-in-k8s
+valid:
+  - 'resource "kubernetes_namespace_v1" "app" {}'
+invalid:
+  - 'resource "google_storage_bucket" "bucket" {}'

@@ -1,0 +1,8 @@
+id: mod-07-google-in-k8s
+snapshots:
+  "resource \"google_storage_bucket\" \"bucket\" {}":
+    labels:
+    - source: resource "google_storage_bucket" "bucket" {}
+      style: primary
+      start: 0
+      end: 44

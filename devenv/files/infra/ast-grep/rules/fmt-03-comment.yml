@@ -1,0 +1,11 @@
+id: fmt-03-comment
+language: hcl
+severity: error
+message: FMT-03 Use # only for renovate: and tfsec:ignore: directives.
+ignores:
+  - "**/.terraform.lock.hcl"
+rule:
+  all:
+    - kind: comment
+    - not:
+        regex: '^#\s*(renovate:|tfsec:ignore:)'

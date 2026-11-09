@@ -11,9 +11,19 @@
   env.TF_LIB = "${./files/infra}";
   env.TFLINT_CONFIG_FILE = "${./files/infra}/tflint.hcl";
 
-  packages = [ pkgs.prefrio ];
+  packages = [
+    pkgs.ast-grep
+    pkgs.prefrio
+  ];
 
   git-hooks.hooks = {
+    ast-grep = {
+      enable = true;
+      name = "ast-grep";
+      entry = "${pkgs.ast-grep}/bin/ast-grep scan --config ${./files/infra}/ast-grep/sgconfig.yml --no-ignore hidden";
+      pass_filenames = false;
+    };
+
     ripsecrets.enable = true;
     terraform-format.enable = true;
     tflint = {

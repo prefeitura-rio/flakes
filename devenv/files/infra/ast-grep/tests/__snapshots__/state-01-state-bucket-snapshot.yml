@@ -1,0 +1,13 @@
+id: state-01-state-bucket
+snapshots:
+  "remote_state {\n  config = {\n    bucket = \"other-state\"\n  }\n}\n":
+    labels:
+    - source: |-
+        remote_state {
+          config = {
+            bucket = "other-state"
+          }
+        }
+      style: primary
+      start: 0
+      end: 60

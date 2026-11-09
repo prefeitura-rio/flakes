@@ -1,0 +1,8 @@
+id: mod-09-nested-module
+snapshots:
+  source = "./network":
+    labels:
+    - source: source = "./network"
+      style: primary
+      start: 0
+      end: 20

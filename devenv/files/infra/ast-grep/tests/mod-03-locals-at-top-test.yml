@@ -1,0 +1,16 @@
+id: mod-03-locals-at-top
+valid:
+  - |
+    locals {
+      name = "value"
+      nested = {
+        name = "value"
+      }
+    }
+    resource "google_storage_bucket" "bucket" {}
+invalid:
+  - |
+    resource "google_storage_bucket" "bucket" {}
+    locals {
+      name = "value"
+    }

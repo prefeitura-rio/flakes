@@ -12,6 +12,7 @@
   packages = with pkgs; [
     nushell
     nu-lint
+    ast-grep
     nixfmt
   ];
 
@@ -24,7 +25,11 @@
         nutest run-tests --path tests
       '';
     };
+    "ast-grep:test" = {
+      exec = "ast-grep test --config devenv/files/infra/ast-grep/sgconfig.yml";
+    };
     "pkgs:test".after = [
+      "ast-grep:test"
       "prefrio:test"
     ];
   };

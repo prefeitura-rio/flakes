@@ -1,0 +1,10 @@
+id: mod-07-kubernetes-in-gcp
+language: hcl
+severity: error
+message: MOD-07 Keep Kubernetes resources in modules/k8s.
+files:
+  - "**/modules/gcp/**/*.tf"
+rule:
+  all:
+    - kind: block
+    - regex: '^resource\s+"(kubernetes_|helm_release|kubectl_)'

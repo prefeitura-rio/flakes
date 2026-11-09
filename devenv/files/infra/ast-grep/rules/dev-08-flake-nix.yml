@@ -1,0 +1,8 @@
+id: dev-08-flake-nix
+language: nix
+severity: error
+message: DEV-08 Do not add flake.nix to this repository.
+files:
+  - "**/flake.nix"
+rule:
+  kind: source_code

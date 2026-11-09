@@ -1,0 +1,8 @@
+id: dev-06-tfsec-config
+language: yaml
+severity: error
+message: DEV-06 Keep tfsec configuration in the shared profile.
+files:
+  - "**/.tfsec/config.yml"
+rule:
+  kind: stream

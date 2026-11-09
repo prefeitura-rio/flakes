@@ -1,0 +1,12 @@
+id: state-01-state-bucket
+language: hcl
+severity: error
+message: STATE-01 Use gs://iplanrio-terraform-state for remote state.
+files:
+  - "**/units/**/*.hcl"
+rule:
+  all:
+    - kind: block
+    - regex: '^remote_state\s*\{'
+    - not:
+        regex: '(?s:.*\bbucket\s*=\s*"iplanrio-terraform-state")'

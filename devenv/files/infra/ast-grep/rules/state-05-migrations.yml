@@ -1,0 +1,15 @@
+id: state-05-migrations
+language: hcl
+severity: error
+message: STATE-05 Keep only removed, import or moved blocks in migrations.tf.
+files:
+  - "**/migrations.tf"
+rule:
+  all:
+    - kind: block
+    - not:
+        inside:
+          kind: block
+          stopBy: end
+    - not:
+        regex: '^(removed|import|moved)\s*\{'

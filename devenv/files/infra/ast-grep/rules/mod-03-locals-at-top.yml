@@ -1,0 +1,15 @@
+id: mod-03-locals-at-top
+language: hcl
+severity: error
+message: MOD-03 Put a locals block at the top of its file without blank lines.
+rule:
+  any:
+    - all:
+        - kind: block
+        - regex: '^locals\s*\{'
+        - follows:
+            kind: block
+            stopBy: neighbor
+    - all:
+        - kind: block
+        - regex: '^locals\s*\{(?s:.*\n[ \t]*\n  [A-Za-z_][A-Za-z0-9_]*\s*=)'

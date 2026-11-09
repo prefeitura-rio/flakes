@@ -1,0 +1,6 @@
+id: fmt-03-comment
+valid:
+  - '# renovate: datasource=helm depName=chart'
+  - '# tfsec:ignore:google-storage-bucket-encryption-customer-key'
+invalid:
+  - '# explain this value'

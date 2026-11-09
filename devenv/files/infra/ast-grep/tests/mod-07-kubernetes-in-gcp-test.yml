@@ -1,0 +1,5 @@
+id: mod-07-kubernetes-in-gcp
+valid:
+  - 'resource "google_storage_bucket" "bucket" {}'
+invalid:
+  - 'resource "kubernetes_namespace_v1" "app" {}'

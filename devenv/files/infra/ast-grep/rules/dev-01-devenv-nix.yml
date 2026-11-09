@@ -1,0 +1,11 @@
+id: dev-01-devenv-nix
+language: nix
+severity: error
+message: DEV-01 Keep devenv.nix only at the repository root or in civitas.
+files:
+  - "**/devenv.nix"
+ignores:
+  - "devenv.nix"
+  - "civitas/devenv.nix"
+rule:
+  kind: source_code

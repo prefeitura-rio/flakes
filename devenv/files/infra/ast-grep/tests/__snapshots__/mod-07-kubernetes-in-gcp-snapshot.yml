@@ -1,0 +1,8 @@
+id: mod-07-kubernetes-in-gcp
+snapshots:
+  "resource \"kubernetes_namespace_v1\" \"app\" {}":
+    labels:
+    - source: resource "kubernetes_namespace_v1" "app" {}
+      style: primary
+      start: 0
+      end: 43

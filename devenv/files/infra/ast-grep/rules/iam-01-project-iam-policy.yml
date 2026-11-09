@@ -1,0 +1,8 @@
+id: iam-01-project-iam-policy
+language: hcl
+severity: error
+message: IAM-01 Use additive google_project_iam_member resources.
+rule:
+  all:
+    - kind: block
+    - regex: '^resource\s+"google_project_iam_policy"'

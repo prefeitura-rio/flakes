@@ -1,0 +1,11 @@
+id: mod-05-provider-in-module
+snapshots:
+  "provider \"google\" {\n  project = var.project_id\n}\n":
+    labels:
+    - source: |-
+        provider "google" {
+          project = var.project_id
+        }
+      style: primary
+      start: 0
+      end: 48

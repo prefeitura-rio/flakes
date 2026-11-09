@@ -1,0 +1,10 @@
+id: tg-03-standard-unit
+language: hcl
+severity: error
+message: TG-03 Do not repeat root.hcl configuration in a standard unit.
+files:
+  - "**/units/**/*.hcl"
+rule:
+  all:
+    - kind: config_file
+    - regex: '(?s:^.*include\s+"root"\s*\{.*\}\s*(terraform\s*\{|locals\s*\{.*\bsops_decrypt_file\b|(?:project_id|region)\s*=))'

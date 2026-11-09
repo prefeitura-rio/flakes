@@ -1,0 +1,8 @@
+id: state-05-migrations
+snapshots:
+  "resource \"google_storage_bucket\" \"bucket\" {}":
+    labels:
+    - source: resource "google_storage_bucket" "bucket" {}
+      style: primary
+      start: 0
+      end: 44

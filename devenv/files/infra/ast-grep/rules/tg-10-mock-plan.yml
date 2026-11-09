@@ -1,0 +1,10 @@
+id: tg-10-mock-plan
+language: hcl
+severity: error
+message: TG-10 Do not allow mock outputs for plan.
+files:
+  - "**/units/**/*.hcl"
+rule:
+  all:
+    - kind: attribute
+    - regex: '^mock_outputs_allowed_terraform_commands\s*=\s*\[[^\]]*"plan"'

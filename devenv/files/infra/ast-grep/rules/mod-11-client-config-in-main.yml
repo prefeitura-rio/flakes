@@ -1,0 +1,12 @@
+id: mod-11-client-config-in-main
+language: hcl
+severity: error
+message: MOD-11 Keep google_client_config.current in modules/k8s/main.tf.
+files:
+  - "**/modules/k8s/**/*.tf"
+ignores:
+  - "**/modules/k8s/main.tf"
+rule:
+  all:
+    - kind: block
+    - regex: '^data\s+"google_client_config"\s+"current"'

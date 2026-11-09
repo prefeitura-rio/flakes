@@ -1,0 +1,10 @@
+id: mod-07-google-in-k8s
+language: hcl
+severity: error
+message: MOD-07 Keep google_* resources in modules/gcp.
+files:
+  - "**/modules/k8s/**/*.tf"
+rule:
+  all:
+    - kind: block
+    - regex: '^resource\s+"google_'

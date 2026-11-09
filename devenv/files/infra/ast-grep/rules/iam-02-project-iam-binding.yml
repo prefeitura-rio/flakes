@@ -1,0 +1,8 @@
+id: iam-02-project-iam-binding
+language: hcl
+severity: error
+message: IAM-02 Use google_project_iam_member, not google_project_iam_binding.
+rule:
+  all:
+    - kind: block
+    - regex: '^resource\s+"google_project_iam_binding"'

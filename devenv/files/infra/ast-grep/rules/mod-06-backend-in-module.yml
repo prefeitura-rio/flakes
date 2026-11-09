@@ -1,0 +1,10 @@
+id: mod-06-backend-in-module
+language: hcl
+severity: error
+message: MOD-06 Configure no backend in a module.
+files:
+  - "**/modules/**/*.tf"
+rule:
+  all:
+    - kind: block
+    - regex: '^backend\s+"'

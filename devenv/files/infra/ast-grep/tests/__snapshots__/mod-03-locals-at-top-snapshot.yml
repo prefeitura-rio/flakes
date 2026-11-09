@@ -1,0 +1,15 @@
+id: mod-03-locals-at-top
+snapshots:
+  "resource \"google_storage_bucket\" \"bucket\" {}\nlocals {\n  name = \"value\"\n}\n":
+    labels:
+    - source: |-
+        locals {
+          name = "value"
+        }
+      style: primary
+      start: 45
+      end: 72
+    - source: resource "google_storage_bucket" "bucket" {}
+      style: secondary
+      start: 0
+      end: 44

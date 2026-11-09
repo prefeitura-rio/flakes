@@ -1,0 +1,8 @@
+id: mod-06-backend-in-module
+snapshots:
+  "backend \"gcs\" {}":
+    labels:
+    - source: backend "gcs" {}
+      style: primary
+      start: 0
+      end: 16

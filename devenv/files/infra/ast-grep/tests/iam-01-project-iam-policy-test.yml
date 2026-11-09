@@ -1,0 +1,7 @@
+id: iam-01-project-iam-policy
+valid:
+  - |
+    resource "google_project_iam_member" "reader" {}
+invalid:
+  - |
+    resource "google_project_iam_policy" "project" {}

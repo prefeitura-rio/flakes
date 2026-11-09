@@ -1,0 +1,11 @@
+id: mod-05-provider-in-module
+valid:
+  - |
+    terraform {
+      required_providers {}
+    }
+invalid:
+  - |
+    provider "google" {
+      project = var.project_id
+    }

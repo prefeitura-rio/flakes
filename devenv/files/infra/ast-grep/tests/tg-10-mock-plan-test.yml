@@ -1,0 +1,5 @@
+id: tg-10-mock-plan
+valid:
+  - 'mock_outputs_allowed_terraform_commands = ["init", "validate"]'
+invalid:
+  - 'mock_outputs_allowed_terraform_commands = ["init", "plan"]'

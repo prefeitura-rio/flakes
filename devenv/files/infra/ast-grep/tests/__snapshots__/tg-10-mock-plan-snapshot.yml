@@ -1,0 +1,8 @@
+id: tg-10-mock-plan
+snapshots:
+  "mock_outputs_allowed_terraform_commands = [\"init\", \"plan\"]":
+    labels:
+    - source: mock_outputs_allowed_terraform_commands = ["init", "plan"]
+      style: primary
+      start: 0
+      end: 58

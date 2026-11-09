@@ -1,0 +1,11 @@
+id: dev-01-devenv-yaml
+language: yaml
+severity: error
+message: DEV-01 Keep devenv.yaml only at the repository root or in civitas.
+files:
+  - "**/devenv.yaml"
+ignores:
+  - "devenv.yaml"
+  - "civitas/devenv.yaml"
+rule:
+  kind: stream

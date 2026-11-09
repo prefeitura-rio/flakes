@@ -1,0 +1,5 @@
+id: iam-02-project-iam-binding
+valid:
+  - 'resource "google_project_iam_member" "reader" {}'
+invalid:
+  - 'resource "google_project_iam_binding" "readers" {}'

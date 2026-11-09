@@ -1,0 +1,24 @@
+id: tg-03-standard-unit
+snapshots:
+  "include \"root\" {\n  path = \"root.hcl\"\n}\nproject_id = \"project\"\n":
+    labels:
+    - source: |
+        include "root" {
+          path = "root.hcl"
+        }
+        project_id = "project"
+      style: primary
+      start: 0
+      end: 62
+  "include \"root\" {\n  path = \"root.hcl\"\n}\nterraform {\n  source = \"../../modules/gcp\"\n}\n":
+    labels:
+    - source: |
+        include "root" {
+          path = "root.hcl"
+        }
+        terraform {
+          source = "../../modules/gcp"
+        }
+      style: primary
+      start: 0
+      end: 84
