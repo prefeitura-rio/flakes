@@ -15,6 +15,8 @@ Every `.nix` file under `pkgs/` is a module that defines an overlay: `overlays.<
 Each file in `devenv/` is a devenv module that a project can import. A project declares this flake as an input and lists the profiles it wants:
 
 ```yaml
+profile: quality-gate
+
 inputs:
   git-hooks:
     url: github:cachix/git-hooks.nix
@@ -27,6 +29,26 @@ imports:
   - prefrio/devenv/infra.nix
   - prefrio/devenv/quality-gate.nix
 ```
+
+Set `profile: quality-gate` when the repository must install the quality-gate
+hooks on ordinary `devenv shell` entry. Alternatively, select the profile once
+when trusting the directory:
+
+```bash
+devenv --profile quality-gate allow
+```
+
+This follows the bootstrap used by the other devenv repositories: after a
+clone, the developer configures the shell hook once, for example:
+
+```bash
+eval "$(devenv hook bash)"
+```
+
+Then `devenv allow` authorizes automatic activation for the repository.
+Devenv/prek installs `.git/hooks/pre-commit` during that first activation.
+Later directory entries and commits from a terminal, IDE or GUI use the same
+environment and Git hook without manually running `devenv shell` each time.
 
 | Profile | Description |
 | --- | --- |
@@ -162,6 +184,31 @@ The profile also provides language-specific pre-commit hooks:
 The hooks are selected by staged file patterns and do not run
 `quality-gate:tests`. A consumer that imports the profile must declare the
 `git-hooks` input.
+
+Hooks may auto-fix supported formatting and lint issues, but they must not
+run `git add`. After an auto-fix, the hook rejects the current commit so the
+developer can review the changes and stage them explicitly.
+
+### Test workflow
+
+The `quality-gate:tests` task discovers every supported project and delegates
+the test execution to the project:
+
+| Language | Runner |
+|---|---|
+| Python | `uv run pytest` |
+| Go | `go test ./...` |
+| TypeScript | the `scripts.test` command through npm or pnpm |
+
+In the GitLab pipeline, `quality-gate:tests` waits for `format`, `lint`,
+`strlint` and `typecheck`. The pre-commit hooks do not run tests. Coverage and
+the semantic quality of tests are outside this profile and belong to Kodus. A
+project without local test files fails with `No local tests were found`.
+
+The Quality Gate does not invoke a consumer's `devenv test`. A repository may
+keep richer tasks that start its own `processes` or `services`, such as
+integration suites. Those tasks remain owned and invoked by the repository;
+the shared profile only runs the generic project test runners above.
 
 ### Project discovery
 

@@ -9,6 +9,9 @@ const IGNORED_DIRECTORY_NAMES = [
     scripts tools bin hack infra deploy k8s helm test tests spec e2e fixtures
     testdata ci .ci pipeline pipelines
 ]
+const IGNORED_TEST_PATH_NAMES = [
+    .git node_modules vendor .venv __pycache__ .cache dist build out .next .nuxt coverage
+]
 
 def project []: nothing -> path {
     $env.QUALITY_GATE_PROJECT_DIR? | default '.' | path expand
@@ -57,6 +60,46 @@ def project-directories []: nothing -> list<string> {
     | where {|directory| not (ignored-project-path $directory $scope) }
     | where {|directory| (project-languages $directory) | is-not-empty }
     | sort
+}
+
+def local-test-files [patterns: list<string>]: nothing -> list<string> {
+    let scope = (project)
+    $patterns
+    | each {|pattern| glob --no-dir ($'($scope)/($pattern)' | path expand) }
+    | flatten
+    | where {|file|
+        let parts = ($file | path split)
+        not ($parts | any {|part| $part in $IGNORED_TEST_PATH_NAMES })
+    }
+    | uniq
+    | sort
+}
+
+def require-local-tests [language: string] {
+    let patterns = match $language {
+        python => ['**/test_*.py' '**/*_test.py']
+        go => ['**/*_test.go']
+        typescript => [
+            '**/*.test.ts'
+            '**/*.test.tsx'
+            '**/*.test.mts'
+            '**/*.test.cts'
+            '**/*.test.js'
+            '**/*.test.jsx'
+            '**/*.spec.ts'
+            '**/*.spec.tsx'
+            '**/*.spec.mts'
+            '**/*.spec.cts'
+            '**/*.spec.js'
+            '**/*.spec.jsx'
+            '**/*.spec.vue'
+        ]
+        _ => []
+    }
+
+    if (local-test-files $patterns | is-empty) {
+        error make {msg: 'No local tests were found'}
+    }
 }
 
 def skip [language: string] {
@@ -464,16 +507,19 @@ def lint-typescript-typecheck [] {
 }
 
 def test-python [] {
+    require-local-tests python
     sync-python
     run-check 'uv pytest' uv [run pytest]
 }
 
 def test-go [] {
+    require-local-tests go
     run-check 'go test' go [test ./...]
 }
 
 def test-typescript [] {
     validate-node-version
+    require-local-tests typescript
     if not (package-has-script test) {
         error make {msg: 'TypeScript projects must define scripts.test in package.json.'}
     }
@@ -690,6 +736,14 @@ def print-console-summary [title: string, scope: string, results: list<record>] 
         print $'Summary: all ($results | length) checks passed.'
     } else {
         print $'Summary: ($failures | length) of ($results | length) checks failed.'
+        print ''
+        print 'Failure details:'
+        for failure in $failures {
+            print $'### `($failure.project)` / ($failure.language) / ($failure.check)'
+            print $failure.error
+            print $'How to fix: ($failure.fix)'
+            print ''
+        }
     }
     print ''
 }

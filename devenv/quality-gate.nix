@@ -53,15 +53,28 @@ let
       name,
       files,
       checks,
+      fixes ? [ ],
     }:
     {
       enable = true;
       inherit name files;
       entry = "${pkgs.writeShellScript name ''
         set -eu
+        export PATH="${lib.makeBinPath toolPackages}:$PATH"
+        failed=0
         ${lib.concatMapStringsSep "\n" (
-          command: "${pkgs.nushell}/bin/nu ${script} ${escapeShellArgs command}"
+          command: "if ! ${pkgs.nushell}/bin/nu ${script} ${escapeShellArgs command}; then failed=1; fi"
         ) checks}
+        if [ "$failed" -eq 0 ]; then
+          exit 0
+        fi
+        if [ ${toString (builtins.length fixes)} -eq 0 ]; then
+          exit 1
+        fi
+        echo "Quality Gate applied automatic fixes."
+        ${lib.concatMapStringsSep "\n" (command: "${lib.escapeShellArgs command}") fixes}
+        echo "Review the changes, run git add manually, and commit again."
+        exit 1
       ''}";
       language = "system";
       pass_filenames = false;
@@ -92,27 +105,31 @@ in
           [
             "format"
             "python"
-            "ruff"
           ]
           [
             "lint"
             "python"
-            "ruff"
           ]
           [
-            "lint"
-            "python"
-            "complexipy"
-          ]
-          [
-            "lint"
-            "python"
-            "basedpyright"
-          ]
-          [
-            "lint"
-            "python"
             "strlint"
+            "python"
+          ]
+          [
+            "typecheck"
+            "python"
+          ]
+        ];
+        fixes = [
+          [
+            "ruff"
+            "format"
+            "."
+          ]
+          [
+            "ruff"
+            "check"
+            "--fix"
+            "."
           ]
         ];
       };
@@ -124,32 +141,26 @@ in
           [
             "format"
             "go"
-            "gofumpt"
-          ]
-          [
-            "format"
-            "go"
-            "goimports"
           ]
           [
             "lint"
             "go"
-            "golangci"
           ]
           [
-            "lint"
-            "go"
             "strlint"
+            "go"
+          ]
+        ];
+        fixes = [
+          [
+            "gofumpt"
+            "-w"
+            "."
           ]
           [
-            "lint"
-            "go"
-            "vet"
-          ]
-          [
-            "lint"
-            "go"
-            "build"
+            "goimports"
+            "-w"
+            "."
           ]
         ];
       };
@@ -161,27 +172,25 @@ in
           [
             "format"
             "typescript"
-            "oxfmt"
           ]
           [
             "lint"
             "typescript"
-            "oxlint"
           ]
           [
-            "lint"
-            "typescript"
-            "react-doctor"
-          ]
-          [
-            "lint"
-            "typescript"
             "strlint"
+            "typescript"
           ]
           [
-            "lint"
-            "typescript"
             "typecheck"
+            "typescript"
+          ]
+        ];
+        fixes = [
+          [
+            "oxfmt"
+            "--write"
+            "."
           ]
         ];
       };
