@@ -1,0 +1,8 @@
+line-length = 100
+
+[lint]
+select = ["ALL"]
+ignore = ["CPY001", "D100", "D103", "D104", "INP001", "PLR2004", "S101"]
+
+[format]
+quote-style = "double"
