@@ -544,6 +544,59 @@ def checks-for-language [language: string]: nothing -> list<list<string>> {
     }
 }
 
+def normalize-language [language: string]: nothing -> string {
+    match $language {
+        'py' | 'python' => 'python'
+        'go' => 'go'
+        'ts' | 'typescript' => 'typescript'
+        _ => (error make {msg: $'Unknown language alias: ($language)'})
+    }
+}
+
+def run-language-checks [language: string, commands: list<list<string>>]: nothing -> record {
+    let scope = (project)
+    cd $scope
+    let directories = project-directories-or-error
+    mut results = []
+
+    for directory in $directories {
+        if $language not-in (project-languages $directory) {
+            continue
+        }
+        for command in $commands {
+            $results = ($results | append (run-project-check $directory $language $command.0 $command.2))
+        }
+    }
+
+    {
+        scope: $scope
+        directories: $directories
+        results: $results
+    }
+}
+
+def report-language-checks [title: string, language: string, commands: list<list<string>>] {
+    let run = run-language-checks $language $commands
+    print-console-summary $title $run.scope $run.results
+    write-summary $title $run.scope $run.results
+    write-junit $title $run.scope $run.results
+    let failures = $run.results | where status == failure
+
+    if ($run.results | is-empty) {
+        log warning $'No ($language) checks apply to the discovered projects.'
+    }
+    if not ($failures | is-empty) {
+        let failure_count = ($failures | length)
+        let result_count = ($run.results | length)
+        error make {msg: $"($title) failed: ($failure_count) of ($result_count) checks failed."}
+    }
+}
+
+def run-language-category [category: string, language: string] {
+    let normalized = normalize-language $language
+    report-language-checks ($'($normalized) ($category)') $normalized (checks-for-category $category $normalized)
+}
+
 def check-fix [verb: string, language: string, check: string]: nothing -> string {
     match [$verb $language $check] {
         [format python ruff] => 'ruff format .'
@@ -858,6 +911,16 @@ def run-command [verb: string, language: string, check: string] {
 }
 
 def main [verb?: string, language?: string, check?: string] {
+    let shortcut = ($env.QUALITY_GATE_SHORTCUT? | default false)
+    if $shortcut and (
+        $verb == null
+        or $language == null
+        or $check != null
+        or $verb not-in [format lint strlint typecheck tests]
+    ) {
+        print 'Usage: qg <format|lint|strlint|typecheck|tests> <py|python|go|ts|typescript>'
+        exit 2
+    }
     if $verb == ci {
         ci
         return
@@ -878,8 +941,13 @@ def main [verb?: string, language?: string, check?: string] {
         test
         return
     }
+    if $language != null and $check == null and $verb in [format lint strlint typecheck tests] {
+        let category = if $verb == tests { 'test' } else { $verb }
+        run-language-category $category $language
+        return
+    }
     if $verb == null or $language == null or $check == null {
-        print 'Usage: quality-gate.nu ci | detect | category <format|lint|strlint|typecheck> | test | <format|lint> <python|go|typescript> <check>'
+        print 'Usage: quality-gate.nu ci | detect | category <format|lint|strlint|typecheck> | test | <format|lint> <python|go|typescript> <check> | <format|lint|strlint|typecheck|tests> <py|python|go|ts|typescript>'
         exit 2
     }
     run-command $verb $language $check

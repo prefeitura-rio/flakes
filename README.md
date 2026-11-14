@@ -16,6 +16,11 @@ Each file in `devenv/` is a devenv module that a project can import. A project d
 
 ```yaml
 inputs:
+  git-hooks:
+    url: github:cachix/git-hooks.nix
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
   prefrio:
     url: github:prefeitura-rio/flakes
 imports:
@@ -86,7 +91,7 @@ The `quality-gate` profile runs the organization's static checks on Go, Python a
 
 ```bash
 devenv --profile quality-gate tasks run quality-gate:all
-devenv --profile quality-gate tasks run app:test
+devenv --profile quality-gate tasks run quality-gate:tests
 ```
 
 ### Tasks
@@ -96,11 +101,67 @@ devenv --profile quality-gate tasks run app:test
 | `quality-gate:all`                                                         | format, lint, strlint and typecheck for every detected project                   |
 | `quality-gate:format`, `:lint`, `:strlint`, `:typecheck`                   | one category for every detected project                                          |
 | `quality-gate:detect`                                                      | lists the detected projects without running checks                               |
-| `app:test`                                                                 | the application tests of every detected project                                  |
+| `quality-gate:tests`                                                       | the repository tests of every detected project                                  |
 | `format:<language>:all`, `lint:<language>:all`                             | every format or lint check of one language (`python`, `go`, `typescript`)        |
 | `format:<language>:<tool>`, `lint:<language>:<tool>`                       | a single check, for example `lint:python:basedpyright`                           |
 
-`strlint` is the structural lint, done with ast-grep. `quality-gate:all` does not run `app:test`: static policy is central, while the test contract belongs to each repository.
+`strlint` is the structural lint, done with ast-grep. `quality-gate:all` does not run `quality-gate:tests`: static policy is central, while the test contract belongs to each repository.
+
+### Manual tasks and the `qg` alias
+
+A developer can run any granular task manually:
+
+```bash
+devenv --profile quality-gate tasks run lint:python:complexipy
+devenv --profile quality-gate tasks run lint:python:basedpyright
+devenv --profile quality-gate tasks run lint:python:all
+```
+
+Inside the devenv shell, the profile also exposes the shorter `qg` command.
+It invokes the same central Nushell script without requiring the long
+`devenv --profile quality-gate tasks run` prefix:
+
+```bash
+qg lint py
+qg lint python
+qg strlint ts
+qg strlint typescript
+```
+
+The alias accepts only the task and the language. It never receives a tool
+name:
+
+```bash
+qg lint py
+qg lint python
+qg strlint ts
+qg strlint typescript
+qg format go
+qg typecheck typescript
+```
+
+The first argument is the task category. The second argument can be the
+language abbreviation (`py`, `ts`) or its full name (`python`, `typescript`).
+The task category runs all checks belonging to that language and category.
+
+The full `quality-gate` command remains available when a descriptive command
+name is preferred:
+
+```bash
+quality-gate lint go golangci
+```
+
+The profile also provides language-specific pre-commit hooks:
+
+| Hook | Tasks covered |
+|---|---|
+| `quality-gate:python` | Python format and all Python lint, type and structural checks |
+| `quality-gate:go` | Go format and all Go lint, build and structural checks |
+| `quality-gate:typescript` | TypeScript format and all TypeScript lint, type and structural checks |
+
+The hooks are selected by staged file patterns and do not run
+`quality-gate:tests`. A consumer that imports the profile must declare the
+`git-hooks` input.
 
 ### Project discovery
 
@@ -116,7 +177,7 @@ Each project is checked on its own, so a monorepo reports one result per project
 
 ### Checks
 
-| Language   | format                | lint                                         | strlint | typecheck                  | app:test                             |
+| Language   | format                | lint                                         | strlint | typecheck                  | quality-gate:tests                   |
 | ---------- | --------------------- | -------------------------------------------- | ------- | -------------------------- | ------------------------------------ |
 | Python     | `ruff format --check` | `ruff check`, `complexipy`                   | ast-grep | `basedpyright`             | `uv run pytest`                      |
 | Go         | `gofumpt`, `goimports` | `golangci-lint`, `go vet`, `go build`        | ast-grep | none                       | `go test ./...`                      |
@@ -129,7 +190,7 @@ TypeScript handling is framework aware:
 - Typecheck uses the project's `scripts.typecheck` when it invokes `tsc`, `vue-tsc` or `nuxt`. Otherwise it falls back to `vue-tsc --noEmit`, `nuxt typecheck` or `tsc --noEmit`, and Nuxt projects run `nuxt prepare` first.
 - Typecheck and tests need a committed lockfile, `package-lock.json` for npm or `pnpm-lock.yaml` for pnpm. A pnpm lockfile also needs `packageManager: pnpm@<version>` in `package.json`.
 - Typecheck needs a `.node-version` file, or `QUALITY_GATE_NODE_VERSION`.
-- `app:test` requires `scripts.test` in `package.json`.
+- `quality-gate:tests` requires `scripts.test` in `package.json` for TypeScript projects.
 
 Python projects with a `pyproject.toml` are synchronized with `uv sync --frozen --all-groups`, so they need a compatible `uv.lock`.
 

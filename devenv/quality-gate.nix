@@ -8,6 +8,10 @@ let
 
   qualityGateDir = ./files/quality-gate;
   script = "${qualityGateDir}/quality-gate.nu";
+  qgScript = ''
+    $env.QUALITY_GATE_SHORTCUT = true
+    ${builtins.readFile script}
+  '';
 
   goimports = pkgs.runCommand "goimports" { } ''
     mkdir -p $out/bin
@@ -44,6 +48,26 @@ let
       + "nu ${script} ${escapeShellArgs command}";
   };
 
+  languageHook =
+    {
+      name,
+      files,
+      checks,
+    }:
+    {
+      enable = true;
+      inherit name files;
+      entry = "${pkgs.writeShellScript name ''
+        set -eu
+        ${lib.concatMapStringsSep "\n" (
+          command: "${pkgs.nushell}/bin/nu ${script} ${escapeShellArgs command}"
+        ) checks}
+      ''}";
+      language = "system";
+      pass_filenames = false;
+      stages = [ "pre-commit" ];
+    };
+
   aggregate = after: { inherit after; };
 in
 {
@@ -60,12 +84,123 @@ in
 
     packages = [ pkgs.nushell ];
 
+    git-hooks.hooks = {
+      quality-gate-python = languageHook {
+        name = "quality-gate:python";
+        files = "\\.(py|pyi)$|(^|/)(pyproject\\.toml|setup\\.py)$";
+        checks = [
+          [
+            "format"
+            "python"
+            "ruff"
+          ]
+          [
+            "lint"
+            "python"
+            "ruff"
+          ]
+          [
+            "lint"
+            "python"
+            "complexipy"
+          ]
+          [
+            "lint"
+            "python"
+            "basedpyright"
+          ]
+          [
+            "lint"
+            "python"
+            "strlint"
+          ]
+        ];
+      };
+
+      quality-gate-go = languageHook {
+        name = "quality-gate:go";
+        files = "\\.go$|(^|/)(go\\.mod|go\\.sum)$";
+        checks = [
+          [
+            "format"
+            "go"
+            "gofumpt"
+          ]
+          [
+            "format"
+            "go"
+            "goimports"
+          ]
+          [
+            "lint"
+            "go"
+            "golangci"
+          ]
+          [
+            "lint"
+            "go"
+            "strlint"
+          ]
+          [
+            "lint"
+            "go"
+            "vet"
+          ]
+          [
+            "lint"
+            "go"
+            "build"
+          ]
+        ];
+      };
+
+      quality-gate-typescript = languageHook {
+        name = "quality-gate:typescript";
+        files = "\\.(ts|tsx|mts|cts|vue)$|(^|/)(package\\.json|tsconfig\\.json|pnpm-lock\\.yaml|package-lock\\.json)$";
+        checks = [
+          [
+            "format"
+            "typescript"
+            "oxfmt"
+          ]
+          [
+            "lint"
+            "typescript"
+            "oxlint"
+          ]
+          [
+            "lint"
+            "typescript"
+            "react-doctor"
+          ]
+          [
+            "lint"
+            "typescript"
+            "strlint"
+          ]
+          [
+            "lint"
+            "typescript"
+            "typecheck"
+          ]
+        ];
+      };
+    };
+
     scripts.quality-gate = {
       package = pkgs.nushell;
       binary = "nu";
-      exec = script;
+      exec = builtins.readFile script;
       packages = toolPackages;
       description = "Run the shared quality gate checks.";
+    };
+
+    scripts.qg = {
+      package = pkgs.nushell;
+      binary = "nu";
+      exec = qgScript;
+      packages = toolPackages;
+      description = "Short alias for the shared quality gate checks.";
     };
 
     tasks = {
@@ -197,7 +332,7 @@ in
         "category"
         "typecheck"
       ];
-      "app:test" = nuTask [ "test" ];
+      "quality-gate:tests" = nuTask [ "test" ];
       "quality-gate:all" = nuTask [ "ci" ];
     };
   };
