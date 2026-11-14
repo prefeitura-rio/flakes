@@ -21,6 +21,11 @@ in
   ];
 
   tasks = {
+    "quality-gate:self-test" = {
+      cwd = config.devenv.root;
+      package = pkgs.nushell;
+      exec = "nu tests/quality-gate_test.nu";
+    };
     "prefrio:test" = {
       cwd = "${config.devenv.root}/pkgs/prefrio";
       package = pkgs.nushell;
@@ -53,6 +58,7 @@ in
       "prefrio:test"
       "complexipy:test"
       "react-doctor:test"
+      "quality-gate:self-test"
     ];
   };
 

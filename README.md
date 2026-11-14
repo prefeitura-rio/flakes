@@ -270,7 +270,8 @@ Development uses devenv. `devenv shell` opens a shell with Nushell, nu-lint and 
 ```bash
 devenv shell
 devenv tasks run <pkg>:test
-devenv tasks run pkgs:test # use this to run all tests in all packages
+devenv tasks run quality-gate:self-test # test the Quality Gate itself
+devenv tasks run pkgs:test # package tests plus internal flakes tests
 ```
 
 ## Adding a package
