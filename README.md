@@ -2,9 +2,11 @@
 
 Nix packages for Prefeitura do Rio infrastructure. Each package lives in its own folder, with its build instructions (`default.nix`), its README and its tests. `flake.nix` only lists what the flake exposes, and `overlays.nix` loads the packages.
 
-| Package                           | Description                             |
-| --------------------------------- | --------------------------------------- |
+| Package | Description |
+| --- | --- |
+| [complexipy](pkgs/complexipy/README.md) | Python cognitive-complexity analyzer |
 | [prefrio](pkgs/prefrio/README.md) | CLI for Terragrunt, SOPS and Kubernetes |
+| [react-doctor](pkgs/react-doctor/README.md) | React-specific code quality diagnostics |
 
 Every `.nix` file under `pkgs/` is a module that defines an overlay: `overlays.<name> = final: _prev: { <name> = ...; };`. `overlays.nix` loads them all with [import-tree](https://github.com/denful/import-tree), composes them into `overlays.default`, exposes each one as `overlays.<name>`, and builds `packages.<system>` from that same overlay. A file or folder whose name starts with `_` is skipped, so a helper that is not a module must start with `_`.
 
@@ -18,25 +20,43 @@ inputs:
     url: github:prefeitura-rio/flakes
 imports:
   - prefrio/devenv/infra.nix
+  - prefrio/devenv/quality-gate.nix
 ```
 
-| Profile                   | Description                                                                                                     |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Profile | Description |
+| --- | --- |
 | [infra](devenv/infra.nix) | prefrio, `TF_LIB` with the shared Terragrunt root, ast-grep, tflint and tfsec configs, and the Terraform git hooks |
+| [quality-gate](devenv/quality-gate.nix) | Opt-in Python, Go and TypeScript format, lint, structural-lint, typecheck and application-test tasks |
 
 A profile can use only the inputs that every project declares: `nixpkgs`, `git-hooks` and `prefrio`.
+
+The quality-gate profile is intentionally opt-in. Importing it makes the
+profile available, but it does not add its tools or tasks to the default
+environment:
+
+```bash
+devenv tasks list
+devenv --profile quality-gate tasks list
+devenv --profile quality-gate tasks run quality-gate:all
+```
 
 Files that belong to a profile, such as a config file, live in `devenv/files/<profile>/`, and the profile refers to them by relative path:
 
 ```
 devenv/
 ├── infra.nix
+├── quality-gate.nix
 └── files/
-    └── infra/
-        ├── ast-grep/
-        ├── root.hcl
-        ├── tflint.hcl
-        └── tfsec.yml
+    ├── infra/
+    │   ├── ast-grep/
+    │   ├── root.hcl
+    │   ├── tflint.hcl
+    │   └── tfsec.yml
+    └── quality-gate/
+        ├── go/
+        ├── python/
+        ├── typescript/
+        └── quality-gate.nu
 ```
 
 ```nix
@@ -59,6 +79,79 @@ The root finds the project through its `.project.json`, which must define `state
 `tflint.hcl` and `tfsec.yml` are the only tflint and tfsec configs. `prefrio tf scan` passes `tfsec.yml` to tfsec, so an exclusion applies to every project and a project does not carry its own `.tfsec/config.yml`.
 
 The `ast-grep/` directory holds structural rules, tests and snapshots for every infrastructure repository that imports this profile. Add a test with each rule. Run `ast-grep test --config devenv/files/infra/ast-grep/sgconfig.yml` in this repository. In an importing repository, run `ast-grep scan --config $TF_LIB/ast-grep/sgconfig.yml --no-ignore hidden`.
+
+## Quality gate
+
+The `quality-gate` profile runs the organization's static checks on Go, Python and TypeScript projects. The same tasks run on a developer machine and in CI. The profile is opt-in: import it, then select it with `--profile quality-gate`.
+
+```bash
+devenv --profile quality-gate tasks run quality-gate:all
+devenv --profile quality-gate tasks run app:test
+```
+
+### Tasks
+
+| Task                                                                       | What it runs                                                                     |
+| -------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `quality-gate:all`                                                         | format, lint, strlint and typecheck for every detected project                   |
+| `quality-gate:format`, `:lint`, `:strlint`, `:typecheck`                   | one category for every detected project                                          |
+| `quality-gate:detect`                                                      | lists the detected projects without running checks                               |
+| `app:test`                                                                 | the application tests of every detected project                                  |
+| `format:<language>:all`, `lint:<language>:all`                             | every format or lint check of one language (`python`, `go`, `typescript`)        |
+| `format:<language>:<tool>`, `lint:<language>:<tool>`                       | a single check, for example `lint:python:basedpyright`                           |
+
+`strlint` is the structural lint, done with ast-grep. `quality-gate:all` does not run `app:test`: static policy is central, while the test contract belongs to each repository.
+
+### Project discovery
+
+Projects are found recursively under `QUALITY_GATE_PROJECT_DIR`, which defaults to the current directory. A directory is a project when it has:
+
+| Language   | Markers                                |
+| ---------- | -------------------------------------- |
+| Python     | `pyproject.toml` or `setup.py`         |
+| Go         | `go.mod`                               |
+| TypeScript | `package.json` and `tsconfig.json`     |
+
+Each project is checked on its own, so a monorepo reports one result per project, language and check. Hidden directories and generated, vendored, test and operational directories are skipped, such as `node_modules`, `vendor`, `dist`, `build`, `.next`, `test`, `tests`, `fixtures`, `docs`, `scripts`, `infra` and `ci`. The command fails when no project is found.
+
+### Checks
+
+| Language   | format                | lint                                         | strlint | typecheck                  | app:test                             |
+| ---------- | --------------------- | -------------------------------------------- | ------- | -------------------------- | ------------------------------------ |
+| Python     | `ruff format --check` | `ruff check`, `complexipy`                   | ast-grep | `basedpyright`             | `uv run pytest`                      |
+| Go         | `gofumpt`, `goimports` | `golangci-lint`, `go vet`, `go build`        | ast-grep | none                       | `go test ./...`                      |
+| TypeScript | `oxfmt`               | `oxlint`, `react-doctor` (React projects)    | ast-grep | `tsc`, `vue-tsc` or `nuxt` | `npm test` or `pnpm test`            |
+
+TypeScript handling is framework aware:
+
+- Next.js enables the Oxlint React and Next.js plugins and ignores `.next/` and `out/`. React projects enable the React plugin and run `react-doctor`.
+- Vue `<script>` blocks, including the `setup` and `lang` variants, are scanned by the shared ast-grep rules.
+- Typecheck uses the project's `scripts.typecheck` when it invokes `tsc`, `vue-tsc` or `nuxt`. Otherwise it falls back to `vue-tsc --noEmit`, `nuxt typecheck` or `tsc --noEmit`, and Nuxt projects run `nuxt prepare` first.
+- Typecheck and tests need a committed lockfile, `package-lock.json` for npm or `pnpm-lock.yaml` for pnpm. A pnpm lockfile also needs `packageManager: pnpm@<version>` in `package.json`.
+- Typecheck needs a `.node-version` file, or `QUALITY_GATE_NODE_VERSION`.
+- `app:test` requires `scripts.test` in `package.json`.
+
+Python projects with a `pyproject.toml` are synchronized with `uv sync --frozen --all-groups`, so they need a compatible `uv.lock`.
+
+### Configuration precedence
+
+For Ruff, golangci-lint, basedpyright and Oxlint, a repository that has its own configuration keeps it. Otherwise the central file in `devenv/files/quality-gate/` is used.
+
+Structural lint is additive. The central ast-grep rules always run first. Then the repository's own rules run, if it has `sgconfig.yaml`, `rules/`, `.quality-gate/sgconfig.yaml` or `.quality-gate/rules/`. A repository can add rules but cannot remove the central ones.
+
+### Reports
+
+Every category prints a Markdown table to the terminal with one row per project, language and check, and the output of a failing check is printed as it runs. These variables write reports to files. The Markdown and JUnit reports also include each failure's output and the command that fixes it:
+
+| Variable                        | Output                                            |
+| ------------------------------- | ------------------------------------------------- |
+| `QUALITY_GATE_SUMMARY_FILE`     | Markdown report with failure details and fixes    |
+| `QUALITY_GATE_JUNIT_FILE`       | JUnit XML report                                  |
+| `QUALITY_GATE_DETECTION_FILE`   | detected languages and project count, as `KEY=value` lines |
+| `QUALITY_GATE_PROJECT_DIR`      | directory to scan                                 |
+| `QUALITY_GATE_NODE_VERSION`     | Node.js version when there is no `.node-version`  |
+
+The tools, including `complexipy` and `react-doctor`, are pinned by this repository, so a project's `devenv.lock` fixes the versions of both the tools and the rules.
 
 ## Development
 
