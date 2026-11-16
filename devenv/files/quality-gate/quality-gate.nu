@@ -166,13 +166,10 @@ def run-check [name: string, command: string, arguments: list<string>] {
     }
 }
 
-def project-has-ruff-config []: nothing -> bool {
-    if (['ruff.toml' '.ruff.toml'] | any {|file| $file | path exists}) {
-        true
-    } else if ('pyproject.toml' | path exists) {
-        (open --raw pyproject.toml | str contains '[tool.ruff')
-    } else {
-        false
+def warn-local-quality-config [files: list<string>] {
+    let found = $files | where {|file| ($file | path exists) }
+    if ($found | is-not-empty) {
+        log warning $'Ignoring local quality configuration (($found | str join ", ")); the central Quality Gate configuration is mandatory.'
     }
 }
 
@@ -206,8 +203,9 @@ def python-project []: nothing -> bool {
 def format-python [] {
     if not (python-project) { return }
     sync-python
+    warn-local-quality-config ['ruff.toml' '.ruff.toml']
 
-    let result = capture ruff [format --check .]
+    let result = capture ruff [format --check --config $env.QUALITY_GATE_RUFF_CONFIG .]
     if $result.exit_code == 0 {
         print 'ruff format: all files are correctly formatted.'
         return
@@ -215,21 +213,16 @@ def format-python [] {
 
     if ($result.stdout | is-not-empty) { print ($result.stdout | str trim) }
     if ($result.stderr | is-not-empty) { print -e ($result.stderr | str trim) }
-    let diff = capture ruff [format --diff .]
+    let diff = capture ruff [format --diff --config $env.QUALITY_GATE_RUFF_CONFIG .]
     if ($diff.stdout | is-not-empty) { print ($diff.stdout | str trim) }
-    error make {msg: 'ruff format found formatting differences; run `ruff format .`'}
+    error make {msg: 'ruff format found formatting differences; run `qg format py`'}
 }
 
 def lint-python [] {
     if not (python-project) { return }
     sync-python
-
-    let arguments = if (project-has-ruff-config) {
-        [check .]
-    } else {
-        [check --config $env.QUALITY_GATE_RUFF_CONFIG .]
-    }
-    run-check 'ruff check' ruff $arguments
+    warn-local-quality-config ['ruff.toml' '.ruff.toml']
+    run-check 'ruff check' ruff [check --config $env.QUALITY_GATE_RUFF_CONFIG .]
 }
 
 def lint-python-complexipy [] {
@@ -242,14 +235,8 @@ def lint-python-complexipy [] {
 def lint-python-basedpyright [] {
     if not (python-project) { return }
     sync-python
-
-    let pyproject = if ('pyproject.toml' | path exists) { open --raw pyproject.toml } else { '' }
-    let arguments = if ('pyrightconfig.json' | path exists) or ($pyproject | str contains '[tool.basedpyright') or ($pyproject | str contains '[tool.pyright') {
-        [--project ($env.PWD | path expand)]
-    } else {
-        [--project $env.QUALITY_GATE_PYRIGHT_CONFIG .]
-    }
-    run-check 'basedpyright' basedpyright $arguments
+    warn-local-quality-config ['pyrightconfig.json']
+    run-check 'basedpyright' basedpyright [--project $env.QUALITY_GATE_PYRIGHT_CONFIG .]
 }
 
 def ast-grep-config [rules: path, language: string]: nothing -> path {
@@ -378,12 +365,8 @@ def format-go-goimports [] {
 
 def lint-go-golangci [] {
     if not (go-project) { return }
-    let arguments = if (['.golangci.yml' '.golangci.yaml'] | any {|file| $file | path exists}) {
-        [run]
-    } else {
-        [run --config $env.QUALITY_GATE_GO_CONFIG]
-    }
-    run-check 'golangci-lint' golangci-lint $arguments
+    warn-local-quality-config ['.golangci.yml' '.golangci.yaml' '.golangci.toml' '.golangci.json']
+    run-check 'golangci-lint' golangci-lint [run --config $env.QUALITY_GATE_GO_CONFIG]
 }
 
 def lint-go-vet [] {
@@ -391,10 +374,9 @@ def lint-go-vet [] {
     run-check 'go vet' go [vet ./...]
 }
 
-def lint-go-build [] {
+def typecheck-go [] {
     if not (go-project) { return }
-    let target = if ('cmd' | path type) == dir { './cmd/...' } else { './...' }
-    run-check 'go build' go [build -ldflags '-s -w' -o /dev/null $target]
+    run-check 'go build' go [build ./...]
 }
 
 def node-manager []: nothing -> string {
@@ -452,17 +434,6 @@ def validate-node-version []: nothing -> nothing {
     }
 }
 
-def typecheck-script []: nothing -> string {
-    let command = (open package.json | get --optional scripts.typecheck | default '')
-    if ($command | is-empty) {
-        ''
-    } else if not (['tsc' 'vue-tsc' 'nuxt'] | any {|binary| $command | str contains $binary }) {
-        error make {msg: $"scripts.typecheck does not invoke a recognised type-checker binary (tsc, vue-tsc, nuxt). Got: \"($command)\"."}
-    } else {
-        $command
-    }
-}
-
 def package-has-script [name: string]: nothing -> bool {
     let package = open package.json
     ($package.scripts? | default {} | get --optional $name | is-not-empty)
@@ -501,23 +472,21 @@ def typescript-react-project []: nothing -> bool {
 
 def format-typescript [] {
     if not (node-project) { return }
-    let result = capture oxfmt [--list-different .]
+    warn-local-quality-config ['.oxfmtrc.json' '.oxfmtrc.jsonc' 'oxfmt.config.js' 'oxfmt.config.mjs' 'oxfmt.config.ts' 'oxfmt.config.mts']
+    let result = capture oxfmt [--config $env.QUALITY_GATE_OXFMT_CONFIG --list-different .]
     if $result.exit_code == 0 {
         print 'oxfmt: all files are correctly formatted.'
     } else {
         if ($result.stdout | is-not-empty) { print ($result.stdout | str trim) }
         if ($result.stderr | is-not-empty) { print -e ($result.stderr | str trim) }
-        error make {msg: 'oxfmt found formatting differences; run `oxfmt --write .`'}
+        error make {msg: 'oxfmt found formatting differences; run `qg format ts`'}
     }
 }
 
 def lint-typescript-oxlint [] {
     if not (node-project) { return }
-    let paths = if (['.oxlintrc.json' '.oxlintrc.yaml' '.oxlintrc.yml' 'oxlint.config.js' 'oxlint.config.mjs' 'oxlint.config.ts'] | any {|file| $file | path exists}) {
-        [.] 
-    } else {
-        [--config $env.QUALITY_GATE_OXLINT_CONFIG .]
-    }
+    warn-local-quality-config ['.oxlintrc.json' '.oxlintrc.yaml' '.oxlintrc.yml' 'oxlint.config.js' 'oxlint.config.mjs' 'oxlint.config.ts']
+    let paths = [--config $env.QUALITY_GATE_OXLINT_CONFIG .]
     let framework = typescript-framework
     let arguments = if $framework == next {
         [--react-plugin --nextjs-plugin --ignore-pattern '.next/**' --ignore-pattern 'out/**'] ++ $paths
@@ -543,11 +512,9 @@ def lint-typescript-typecheck [] {
     validate-node-version
     install-node-dependencies
     let manager = node-manager
-    let runner = if $manager == npm { 'npm' } else { 'pnpm' }
-
-    if (package-has-script typecheck) {
-        typecheck-script | ignore
-        let framework = typescript-framework
+    let config = (typescript-quality-config)
+    let framework = typescript-framework
+    try {
         if $framework == nuxt {
             if $manager == npm {
                 run-check 'nuxt prepare' npm [exec --no -- nuxt prepare]
@@ -555,19 +522,40 @@ def lint-typescript-typecheck [] {
                 run-check 'nuxt prepare' pnpm [exec nuxt prepare]
             }
         }
-        run-check 'TypeScript typecheck' $runner [run typecheck]
-    } else if (package-contains 'vue') {
-        run-check 'vue-tsc' $runner [exec vue-tsc --noEmit]
-    } else if (package-contains 'nuxt') {
-        if $manager == npm {
-            run-check 'nuxt prepare' npm [exec --no -- nuxt prepare]
+        if $framework in [vue nuxt] {
+            if $manager == npm {
+                run-check 'vue-tsc' npm [exec -- vue-tsc --noEmit --project $config]
+            } else {
+                run-check 'vue-tsc' pnpm [exec vue-tsc --noEmit --project $config]
+            }
         } else {
-            run-check 'nuxt prepare' pnpm [exec nuxt prepare]
+            if $manager == npm {
+                run-check 'tsc' npm [exec -- tsc --noEmit --project $config]
+            } else {
+                run-check 'tsc' pnpm [exec tsc --noEmit --project $config]
+            }
         }
-        run-check 'nuxt typecheck' $runner [exec nuxt typecheck]
-    } else {
-        run-check 'tsc' $runner [exec tsc --noEmit]
+    } finally {
+        rm $config
     }
+}
+
+def typescript-quality-config []: nothing -> path {
+    let config = (mktemp --suffix .json | str trim)
+    let central = (open $env.QUALITY_GATE_TYPESCRIPT_CONFIG)
+    {
+        extends: ($env.PWD | path join 'tsconfig.json' | path expand)
+        compilerOptions: $central.compilerOptions
+        include: [
+            ($env.PWD | path join '**/*.ts' | path expand)
+            ($env.PWD | path join '**/*.tsx' | path expand)
+            ($env.PWD | path join '**/*.mts' | path expand)
+            ($env.PWD | path join '**/*.cts' | path expand)
+            ($env.PWD | path join '**/*.vue' | path expand)
+        ]
+        exclude: []
+    } | to json | save --force $config
+    $config
 }
 
 def test-python [] {
@@ -608,7 +596,6 @@ def checks-for-category [category: string, language: string]: nothing -> list<li
         [lint go] => [
             [lint go golangci]
             [lint go vet]
-            [lint go build]
         ]
         [lint typescript] => [
             [lint typescript oxlint]
@@ -618,6 +605,7 @@ def checks-for-category [category: string, language: string]: nothing -> list<li
         [strlint go] => [[lint go strlint]]
         [strlint typescript] => [[lint typescript strlint]]
         [typecheck python] => [[lint python basedpyright]]
+        [typecheck go] => [[typecheck go build]]
         [typecheck typescript] => [[lint typescript typecheck]]
         [test python] => [[test python pytest]]
         [test go] => [[test go test]]
@@ -641,7 +629,7 @@ def checks-for-language [language: string]: nothing -> list<list<string>> {
             [lint go golangci]
             [lint go strlint]
             [lint go vet]
-            [lint go build]
+            [typecheck go build]
         ]
         'typescript' => [
             [format typescript oxfmt]
@@ -723,15 +711,15 @@ def fix-language [language: string] {
         cd $directory
         match $normalized {
             python => {
-                run-check 'ruff format' ruff [format .]
-                run-check 'ruff check --fix' ruff [check --fix .]
+                run-check 'ruff format' ruff [format --config $env.QUALITY_GATE_RUFF_CONFIG .]
+                run-check 'ruff check --fix' ruff [check --config $env.QUALITY_GATE_RUFF_CONFIG --fix .]
             }
             go => {
                 run-check 'gofumpt' gofumpt [-w .]
                 run-check 'goimports' goimports [-w .]
             }
             typescript => {
-                run-check 'oxfmt' oxfmt [--write .]
+                run-check 'oxfmt' oxfmt [--config $env.QUALITY_GATE_OXFMT_CONFIG --write .]
             }
         }
         cd $scope
@@ -762,22 +750,22 @@ def run-language-category [category: string, language: string] {
 
 def check-fix [verb: string, language: string, check: string]: nothing -> string {
     match [$verb $language $check] {
-        [format python ruff] => 'ruff format .'
-        [lint python ruff] => 'ruff check .'
+        [format python ruff] => 'ruff format --config $QUALITY_GATE_RUFF_CONFIG .'
+        [lint python ruff] => 'ruff check --config $QUALITY_GATE_RUFF_CONFIG .'
         [lint python complexipy] => 'complexipy .'
-        [lint python basedpyright] => 'basedpyright'
+        [lint python basedpyright] => 'basedpyright --project $QUALITY_GATE_PYRIGHT_CONFIG .'
         [lint python strlint] => 'ast-grep scan'
         [format go gofumpt] => 'gofumpt -w .'
         [format go goimports] => 'goimports -w .'
-        [lint go golangci] => 'golangci-lint run'
+        [lint go golangci] => 'golangci-lint run --config $QUALITY_GATE_GO_CONFIG'
         [lint go strlint] => 'ast-grep scan'
         [lint go vet] => 'go vet ./...'
         [lint go build] => 'go build ./...'
-        [format typescript oxfmt] => 'oxfmt --write .'
-        [lint typescript oxlint] => 'oxlint .'
+        [format typescript oxfmt] => 'oxfmt --config $QUALITY_GATE_OXFMT_CONFIG --write .'
+        [lint typescript oxlint] => 'oxlint --config $QUALITY_GATE_OXLINT_CONFIG .'
         [lint typescript react-doctor] => 'react-doctor .'
         [lint typescript strlint] => 'ast-grep scan'
-        [lint typescript typecheck] => 'npm run typecheck'
+        [lint typescript typecheck] => 'qg typecheck ts'
         [test python pytest] => 'uv run pytest'
         [test go test] => 'go test ./...'
         [test typescript test] => 'npm test'
@@ -1068,12 +1056,14 @@ def run-command [verb: string, language: string, check: string] {
         [lint go golangci] => (lint-go-golangci)
         [lint go strlint] => (lint-strlint go $env.QUALITY_GATE_GO_RULES)
         [lint go vet] => (lint-go-vet)
-        [lint go build] => (lint-go-build)
+        [lint go build] => (typecheck-go)
+        [typecheck go build] => (typecheck-go)
         [format typescript oxfmt] => (format-typescript)
         [lint typescript oxlint] => (lint-typescript-oxlint)
         [lint typescript react-doctor] => (lint-typescript-react-doctor)
         [lint typescript strlint] => (lint-strlint typescript $env.QUALITY_GATE_TYPESCRIPT_RULES)
         [lint typescript typecheck] => (lint-typescript-typecheck)
+        [typecheck typescript] => (lint-typescript-typecheck)
         [test python pytest] => (test-python)
         [test go test] => (test-go)
         [test typescript test] => (test-typescript)

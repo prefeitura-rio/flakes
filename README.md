@@ -227,14 +227,16 @@ Each project is checked on its own, so a monorepo reports one result per project
 | Language   | format                | lint                                         | strlint | typecheck                  | quality-gate:tests                   |
 | ---------- | --------------------- | -------------------------------------------- | ------- | -------------------------- | ------------------------------------ |
 | Python     | `ruff format --check` | `ruff check`, `complexipy`                   | ast-grep | `basedpyright`             | `uv run pytest`                      |
-| Go         | `gofumpt`, `goimports` | `golangci-lint`, `go vet`, `go build`        | ast-grep | none                       | `go test ./...`                      |
+| Go         | `gofumpt`, `goimports` | `golangci-lint`, `go vet`                  | ast-grep | `go build ./...`           | `go test ./...`                      |
 | TypeScript | `oxfmt`               | `oxlint`, `react-doctor` (React projects)    | ast-grep | `tsc`, `vue-tsc` or `nuxt` | `npm test` or `pnpm test`            |
 
 TypeScript handling is framework aware:
 
 - Next.js enables the Oxlint React and Next.js plugins and ignores `.next/` and `out/`. React projects enable the React plugin and run `react-doctor`.
 - Vue `<script>` blocks, including the `setup` and `lang` variants, are scanned by the shared ast-grep rules.
-- Typecheck uses the project's `scripts.typecheck` when it invokes `tsc`, `vue-tsc` or `nuxt`. Otherwise it falls back to `vue-tsc --noEmit`, `nuxt typecheck` or `tsc --noEmit`, and Nuxt projects run `nuxt prepare` first.
+- Typecheck is always invoked by the central runner (`tsc` or `vue-tsc`) with
+  the mandatory Quality Gate compiler options. Nuxt projects run `nuxt prepare`
+  first. A consumer's `scripts.typecheck` is not used for this global check.
 - Typecheck and tests need a committed lockfile, `package-lock.json` for npm or `pnpm-lock.yaml` for pnpm. A pnpm lockfile also needs `packageManager: pnpm@<version>` in `package.json`.
 - Typecheck needs a `.node-version` file, or `QUALITY_GATE_NODE_VERSION`.
 - `quality-gate:tests` requires `scripts.test` in `package.json` for TypeScript projects.
@@ -243,7 +245,20 @@ Python projects with a `pyproject.toml` are synchronized with `uv sync --frozen 
 
 ### Configuration precedence
 
-For Ruff, golangci-lint, basedpyright and Oxlint, a repository that has its own configuration keeps it. Otherwise the central file in `devenv/files/quality-gate/` is used.
+The four Quality Gate categories are centrally enforced in every execution:
+
+- `format` always uses the central formatter configuration and versions;
+- `lint` always uses the central Ruff, golangci-lint and Oxlint configurations;
+- `strlint` always runs the central ast-grep rules; repository rules are additive;
+- `typecheck` always applies the central basedpyright and TypeScript strictness
+  settings.
+
+Repository-local formatter and linter configurations are intentionally ignored
+by the Quality Gate. This prevents a consumer from weakening the corporate
+floor. Project-local TypeScript configuration is used only for project
+structure, paths and framework resolution; the Quality Gate overwrites its
+mandatory compiler options. Local `tsconfig` exclusions cannot remove files
+from the Quality Gate scope.
 
 Structural lint is additive. The central ast-grep rules always run first. Then the repository's own rules run, if it has `sgconfig.yaml`, `rules/`, `.quality-gate/sgconfig.yaml` or `.quality-gate/rules/`. A repository can add rules but cannot remove the central ones.
 

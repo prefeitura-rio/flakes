@@ -75,8 +75,10 @@ let
     QUALITY_GATE_PYTHON_RULES = "${qualityGateDir}/python/rules";
     QUALITY_GATE_PYRIGHT_CONFIG = "${qualityGateDir}/python/pyrightconfig.json";
     QUALITY_GATE_RUFF_CONFIG = "${qualityGateDir}/python/ruff.toml";
+    QUALITY_GATE_TYPESCRIPT_CONFIG = "${qualityGateDir}/typescript/tsconfig.quality-gate.json";
     QUALITY_GATE_TYPESCRIPT_RULES = "${qualityGateDir}/typescript/rules";
     QUALITY_GATE_OXLINT_CONFIG = "${qualityGateDir}/typescript/.oxlintrc.json";
+    QUALITY_GATE_OXFMT_CONFIG = "${qualityGateDir}/typescript/.oxfmtrc.json";
   };
 
   nuTask = command: {
@@ -153,11 +155,15 @@ in
           [
             "ruff"
             "format"
+            "--config"
+            "${qualityGateDir}/python/ruff.toml"
             "."
           ]
           [
             "ruff"
             "check"
+            "--config"
+            "${qualityGateDir}/python/ruff.toml"
             "--fix"
             "."
           ]
@@ -189,6 +195,8 @@ in
         fixes = [
           [
             "oxfmt"
+            "--config"
+            "${qualityGateDir}/typescript/.oxfmtrc.json"
             "--write"
             "."
           ]
@@ -275,6 +283,11 @@ in
       ];
       "lint:go:build" = nuTask [
         "lint"
+        "go"
+        "build"
+      ];
+      "typecheck:go:build" = nuTask [
+        "typecheck"
         "go"
         "build"
       ];
