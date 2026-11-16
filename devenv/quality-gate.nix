@@ -14,9 +14,14 @@ let
     date_bin="${pkgs.coreutils}/bin/date"
     quality_gate_repo="https://github.com/prefeitura-rio/flakes.git"
     quality_gate_ref="quality-gate-latest"
+    quality_gate_run_ref="''${QUALITY_GATE_RUN_REF:-}"
     git_dir="$("$git_bin" rev-parse --git-dir)"
     cache_file="$git_dir/quality-gate-latest"
     quality_gate_sha="''${QUALITY_GATE_RESOLVED_SHA:-}"
+
+    if [ -n "$quality_gate_run_ref" ]; then
+      quality_gate_sha="local"
+    fi
 
     if [ -z "$quality_gate_sha" ]; then
       if quality_gate_sha="$("$git_bin" ls-remote "$quality_gate_repo" "refs/tags/$quality_gate_ref^{}" | "$awk_bin" 'NR == 1 { print $1 }')"; then
@@ -51,6 +56,7 @@ let
     fi
 
     quality_gate_app="quality-gate"
+    language=""
     case "''${1:-}" in
       hook|fix)
         language="''${2:-}"
@@ -69,7 +75,10 @@ let
     esac
 
     export QUALITY_GATE_REVISION="$quality_gate_sha"
-    exec ${pkgs.nix}/bin/nix run "github:prefeitura-rio/flakes/$quality_gate_sha#$quality_gate_app" -- "$@"
+    if [ -z "$quality_gate_run_ref" ]; then
+      quality_gate_run_ref="github:prefeitura-rio/flakes/$quality_gate_sha"
+    fi
+    exec ${pkgs.nix}/bin/nix run "$quality_gate_run_ref#$quality_gate_app" -- "$@"
   '';
   qgScript = ''
     def main [...args: string] {
@@ -78,7 +87,7 @@ let
   '';
 
   nuTask = command: {
-    package = pkgs.nix;
+    package = pkgs.nushell;
     exec = "${qualityGateRunner} ${escapeShellArgs command}";
   };
 
