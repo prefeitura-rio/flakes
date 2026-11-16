@@ -751,7 +751,7 @@ def run-language-category [category: string, language: string] {
 def check-fix [verb: string, language: string, check: string]: nothing -> string {
     match [$verb $language $check] {
         [format python ruff] => 'ruff format --config $QUALITY_GATE_RUFF_CONFIG .'
-        [lint python ruff] => 'ruff check --config $QUALITY_GATE_RUFF_CONFIG .'
+        [lint python ruff] => 'ruff check --config $QUALITY_GATE_RUFF_CONFIG --fix .'
         [lint python complexipy] => 'complexipy .'
         [lint python basedpyright] => 'basedpyright --project $QUALITY_GATE_PYRIGHT_CONFIG .'
         [lint python strlint] => 'ast-grep scan'
@@ -761,6 +761,7 @@ def check-fix [verb: string, language: string, check: string]: nothing -> string
         [lint go strlint] => 'ast-grep scan'
         [lint go vet] => 'go vet ./...'
         [lint go build] => 'go build ./...'
+        [typecheck go build] => 'go build ./...'
         [format typescript oxfmt] => 'oxfmt --config $QUALITY_GATE_OXFMT_CONFIG --write .'
         [lint typescript oxlint] => 'oxlint --config $QUALITY_GATE_OXLINT_CONFIG .'
         [lint typescript react-doctor] => 'react-doctor .'

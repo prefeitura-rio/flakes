@@ -18,13 +18,21 @@ in
     nu-lint
     ast-grep
     nixfmt
+    uv
   ];
 
   tasks = {
     "quality-gate:self-test" = {
       cwd = config.devenv.root;
       package = pkgs.nushell;
-      exec = "nu tests/quality-gate_test.nu";
+      exec = ''
+        use nutest
+        let tests = (nutest list-tests --path tests)
+        if ($tests | is-empty) {
+          error make { msg: "Quality Gate self-test discovered zero tests" }
+        }
+        nutest run-tests --path tests
+      '';
     };
     "prefrio:test" = {
       cwd = "${config.devenv.root}/pkgs/prefrio";
