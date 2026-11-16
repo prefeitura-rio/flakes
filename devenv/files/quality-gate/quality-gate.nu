@@ -826,9 +826,11 @@ def result-project [result: record, scope: string]: nothing -> string {
 
 def print-console-summary [title: string, scope: string, results: list<record>] {
     let failures = $results | where status == failure
+    let revision = $env.QUALITY_GATE_REVISION? | default 'unknown'
     print ''
     print $'Quality Gate — ($title)'
     print $'Scope: ($scope)'
+    print $'Revision: ($revision)'
     print ''
     print '| Project | Language | Check | Outcome |'
     print '| --- | --- | --- | --- |'
@@ -883,10 +885,12 @@ How to fix it:
 ```'
         }
     }
+    let revision = $env.QUALITY_GATE_REVISION? | default 'unknown'
     let content = [
         $'# Quality Gate — ($title)'
         ''
         $'Scope: `($scope)`'
+        $'Revision: `($revision)`'
         ''
         '| Project | Language | Check | Outcome |'
         '| --- | --- | --- | --- |'

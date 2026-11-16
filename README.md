@@ -7,6 +7,7 @@ Nix packages for Prefeitura do Rio infrastructure. Each package lives in its own
 | [complexipy](pkgs/complexipy/README.md) | Python cognitive-complexity analyzer |
 | [prefrio](pkgs/prefrio/README.md) | CLI for Terragrunt, SOPS and Kubernetes |
 | [react-doctor](pkgs/react-doctor/README.md) | React-specific code quality diagnostics |
+| `quality-gate` | Central Quality Gate app; language-specific apps are also exposed |
 
 Every `.nix` file under `pkgs/` is a module that defines an overlay: `overlays.<name> = final: _prev: { <name> = ...; };`. `overlays.nix` loads them all with [import-tree](https://github.com/denful/import-tree), composes them into `overlays.default`, exposes each one as `overlays.<name>`, and builds `packages.<system>` from that same overlay. A file or folder whose name starts with `_` is skipped, so a helper that is not a module must start with `_`.
 
@@ -109,7 +110,18 @@ The `ast-grep/` directory holds structural rules, tests and snapshots for every 
 
 ## Quality gate
 
-The `quality-gate` profile runs the organization's static checks on Go, Python and TypeScript projects. The same tasks run on a developer machine and in CI. The profile is opt-in: import it, then select it with `--profile quality-gate`.
+The `quality-gate` profile bootstraps the organization's static checks on Go,
+Python and TypeScript projects. The executable motor is the flake app, published
+as `quality-gate-latest`; the profile does not provide an alternative copy of
+the rules or tools. This keeps the flakes as the only source of truth.
+
+```bash
+nix run github:prefeitura-rio/flakes/quality-gate-latest#quality-gate -- category lint
+```
+
+The profile is opt-in: import it, then select it with `--profile quality-gate`.
+Its tasks delegate to the same app used by the CI and its hooks. The consumer's
+`devenv.lock` is not a source of Quality Gate rules or tool versions.
 
 ```bash
 devenv --profile quality-gate tasks run quality-gate:all
@@ -167,10 +179,10 @@ language abbreviation (`py`, `ts`) or its full name (`python`, `typescript`).
 The task category runs all checks belonging to that language and category.
 
 The full `quality-gate` command remains available when a descriptive command
-name is preferred:
+name is preferred. It delegates to the published flake app:
 
 ```bash
-quality-gate lint go golangci
+quality-gate category lint
 ```
 
 The profile also provides language-specific pre-commit hooks:
@@ -178,7 +190,7 @@ The profile also provides language-specific pre-commit hooks:
 | Hook | Tasks covered |
 |---|---|
 | `quality-gate:python` | Python format and all Python lint, type and structural checks |
-| `quality-gate:go` | Go format and all Go lint, build and structural checks |
+| `quality-gate:go` | Go format, lint, build typecheck and structural checks |
 | `quality-gate:typescript` | TypeScript format and all TypeScript lint, type and structural checks |
 
 The hooks are selected by staged file patterns and do not run
