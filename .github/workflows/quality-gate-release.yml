@@ -1,0 +1,60 @@
+name: Quality Gate Release
+
+on:
+  workflow_run:
+    workflows: ["Quality Gate Tests"]
+    types: [completed]
+    branches: [master]
+
+concurrency:
+  group: quality-gate-release
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  release-gate:
+    if: github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      ready: ${{ steps.gates.outputs.ready }}
+    steps:
+      - name: Checkout release toolkit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
+        with:
+          repository: prefeitura-rio/actions
+          ref: 13dc55b38fd546b1a2805ba72374efc2cf5c38ba
+          path: release-toolkit
+      - name: Check Quality Gate
+        id: gates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          bash release-toolkit/.github/scripts/check-workflow-gates.sh \
+            --repository "$REPOSITORY" \
+            --target-sha "$TARGET_SHA" \
+            --required-workflow "Quality Gate Tests" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: release-gate
+    if: needs.release-gate.outputs.ready == 'true'
+    permissions:
+      contents: write
+    uses: prefeitura-rio/actions/.github/workflows/release.yml@13dc55b38fd546b1a2805ba72374efc2cf5c38ba
+    with:
+      release_branch: master
+      target_sha: ${{ github.event.workflow_run.head_sha }}
+      initial_version: "2.0.0"
+      bump: minor
+      floating_tag: quality-gate-latest
+      tag_prefix: quality-gate-v
+      toolkit_ref: 13dc55b38fd546b1a2805ba72374efc2cf5c38ba
+      git_author_name: CI Release Bot
+      git_author_email: ci-release@example.invalid
