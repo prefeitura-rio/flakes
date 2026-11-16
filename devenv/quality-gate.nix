@@ -8,9 +8,11 @@ let
 
   qualityGateDir = ./files/quality-gate;
   script = "${qualityGateDir}/quality-gate.nu";
+  qualityGateScript = builtins.readFile script;
   qgScript = ''
-    $env.QUALITY_GATE_SHORTCUT = true
-    ${builtins.readFile script}
+    def main [...args: string] {
+      ${pkgs.nushell}/bin/nu ${script} qg ...$args
+    }
   '';
 
   goimports = pkgs.runCommand "goimports" { } ''
@@ -40,6 +42,43 @@ let
     uv
   ];
 
+  languageToolPackages = {
+    python = with pkgs; [
+      ast-grep
+      basedpyright
+      complexipy
+      ruff
+      uv
+    ];
+    go = with pkgs; [
+      ast-grep
+      go
+      go-tools
+      goimports
+      gofumpt
+      golangci-lint
+    ];
+    typescript = with pkgs; [
+      ast-grep
+      nodejs
+      oxfmt
+      oxlint
+      pnpm
+      react-doctor
+      typescript
+    ];
+  };
+
+  qualityGateEnv = {
+    QUALITY_GATE_GO_RULES = "${qualityGateDir}/go/rules";
+    QUALITY_GATE_GO_CONFIG = "${qualityGateDir}/go/.golangci.yml";
+    QUALITY_GATE_PYTHON_RULES = "${qualityGateDir}/python/rules";
+    QUALITY_GATE_PYRIGHT_CONFIG = "${qualityGateDir}/python/pyrightconfig.json";
+    QUALITY_GATE_RUFF_CONFIG = "${qualityGateDir}/python/ruff.toml";
+    QUALITY_GATE_TYPESCRIPT_RULES = "${qualityGateDir}/typescript/rules";
+    QUALITY_GATE_OXLINT_CONFIG = "${qualityGateDir}/typescript/.oxlintrc.json";
+  };
+
   nuTask = command: {
     package = pkgs.nushell;
     exec =
@@ -52,19 +91,31 @@ let
     {
       name,
       files,
-      checks,
+      language,
       fixes ? [ ],
     }:
+    let
+      packages = languageToolPackages.${language};
+      exports = lib.concatStringsSep "\n" (
+        lib.mapAttrsToList (name: value: "export ${name}=${lib.escapeShellArg value}") qualityGateEnv
+      );
+    in
     {
       enable = true;
       inherit name files;
       entry = "${pkgs.writeShellScript name ''
         set -eu
-        export PATH="${lib.makeBinPath toolPackages}:$PATH"
+        ${exports}
+        export PATH="${lib.makeBinPath packages}:$PATH"
+        if [ "$#" -gt 0 ]; then
+          export QUALITY_GATE_CHANGED_FILES="$(printf '%s\n' "$@")"
+        else
+          unset QUALITY_GATE_CHANGED_FILES || true
+        fi
         failed=0
-        ${lib.concatMapStringsSep "\n" (
-          command: "if ! ${pkgs.nushell}/bin/nu ${script} ${escapeShellArgs command}; then failed=1; fi"
-        ) checks}
+        if ! ${pkgs.nushell}/bin/nu ${script} hook ${language}; then
+          failed=1
+        fi
         if [ "$failed" -eq 0 ]; then
           exit 0
         fi
@@ -73,11 +124,15 @@ let
         fi
         echo "Quality Gate applied automatic fixes."
         ${lib.concatMapStringsSep "\n" (command: "${lib.escapeShellArgs command}") fixes}
-        echo "Review the changes, run git add manually, and commit again."
+        if ${pkgs.nushell}/bin/nu ${script} hook ${language}; then
+          echo "Checks pass after the fixes. Review the changes, run git add manually, and commit again."
+        else
+          echo "Checks still fail after the fixes. Review the diagnostics, run git add manually, and commit again."
+        fi
         exit 1
       ''}";
       language = "system";
-      pass_filenames = false;
+      pass_filenames = true;
       stages = [ "pre-commit" ];
     };
 
@@ -85,40 +140,15 @@ let
 in
 {
   profiles.quality-gate.module = {
-    env = {
-      QUALITY_GATE_GO_RULES = "${qualityGateDir}/go/rules";
-      QUALITY_GATE_GO_CONFIG = "${qualityGateDir}/go/.golangci.yml";
-      QUALITY_GATE_PYTHON_RULES = "${qualityGateDir}/python/rules";
-      QUALITY_GATE_PYRIGHT_CONFIG = "${qualityGateDir}/python/pyrightconfig.json";
-      QUALITY_GATE_RUFF_CONFIG = "${qualityGateDir}/python/ruff.toml";
-      QUALITY_GATE_TYPESCRIPT_RULES = "${qualityGateDir}/typescript/rules";
-      QUALITY_GATE_OXLINT_CONFIG = "${qualityGateDir}/typescript/.oxlintrc.json";
-    };
+    env = qualityGateEnv;
 
     packages = [ pkgs.nushell ];
 
     git-hooks.hooks = {
       quality-gate-python = languageHook {
         name = "quality-gate:python";
+        language = "python";
         files = "\\.(py|pyi)$|(^|/)(pyproject\\.toml|setup\\.py)$";
-        checks = [
-          [
-            "format"
-            "python"
-          ]
-          [
-            "lint"
-            "python"
-          ]
-          [
-            "strlint"
-            "python"
-          ]
-          [
-            "typecheck"
-            "python"
-          ]
-        ];
         fixes = [
           [
             "ruff"
@@ -136,21 +166,8 @@ in
 
       quality-gate-go = languageHook {
         name = "quality-gate:go";
+        language = "go";
         files = "\\.go$|(^|/)(go\\.mod|go\\.sum)$";
-        checks = [
-          [
-            "format"
-            "go"
-          ]
-          [
-            "lint"
-            "go"
-          ]
-          [
-            "strlint"
-            "go"
-          ]
-        ];
         fixes = [
           [
             "gofumpt"
@@ -167,25 +184,8 @@ in
 
       quality-gate-typescript = languageHook {
         name = "quality-gate:typescript";
+        language = "typescript";
         files = "\\.(ts|tsx|mts|cts|vue)$|(^|/)(package\\.json|tsconfig\\.json|pnpm-lock\\.yaml|package-lock\\.json)$";
-        checks = [
-          [
-            "format"
-            "typescript"
-          ]
-          [
-            "lint"
-            "typescript"
-          ]
-          [
-            "strlint"
-            "typescript"
-          ]
-          [
-            "typecheck"
-            "typescript"
-          ]
-        ];
         fixes = [
           [
             "oxfmt"
@@ -199,7 +199,7 @@ in
     scripts.quality-gate = {
       package = pkgs.nushell;
       binary = "nu";
-      exec = builtins.readFile script;
+      exec = qualityGateScript;
       packages = toolPackages;
       description = "Run the shared quality gate checks.";
     };

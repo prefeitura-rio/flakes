@@ -37,6 +37,25 @@ def project-languages [directory: string]: nothing -> list<string> {
     $languages
 }
 
+def changed-files []: nothing -> list<string> {
+    let scope = (project)
+    let raw = ($env.QUALITY_GATE_CHANGED_FILES? | default '')
+    if ($raw | is-empty) {
+        []
+    } else {
+        $raw
+        | lines
+        | where {|file| ($file | str trim | is-not-empty) }
+        | each {|file|
+            if ($file | path expand | str starts-with '/') {
+                $file | path expand
+            } else {
+                $scope | path join $file | path expand
+            }
+        }
+    }
+}
+
 def ignored-project-path [directory: string, scope: string]: nothing -> bool {
     let relative = ($directory | path relative-to $scope)
     let parts = ($relative | path split)
@@ -54,12 +73,23 @@ def project-directories []: nothing -> list<string> {
         (glob --no-dir ($'($scope)/**/package.json'))
     ] | flatten
 
-    $marker_files
+    let directories = $marker_files
     | each {|file| $file | path dirname }
     | uniq
     | where {|directory| not (ignored-project-path $directory $scope) }
     | where {|directory| (project-languages $directory) | is-not-empty }
     | sort
+
+    let changed = changed-files
+    if ($changed | is-empty) {
+        $directories
+    } else {
+        $directories | where {|directory|
+            $changed | any {|file|
+                $file == $directory or ($file | str starts-with ($'($directory)/'))
+            }
+        }
+    }
 }
 
 def local-test-files [patterns: list<string>]: nothing -> list<string> {
@@ -68,7 +98,7 @@ def local-test-files [patterns: list<string>]: nothing -> list<string> {
     | each {|pattern| glob --no-dir ($'($scope)/($pattern)' | path expand) }
     | flatten
     | where {|file|
-        let parts = ($file | path split)
+        let parts = (($file | path relative-to $scope) | path split)
         not ($parts | any {|part| $part in $IGNORED_TEST_PATH_NAMES })
     }
     | uniq
@@ -148,7 +178,17 @@ def project-has-ruff-config []: nothing -> bool {
 
 def sync-python []: nothing -> nothing {
     if ('pyproject.toml' | path exists) {
-        run-check 'uv sync' uv [sync --frozen --all-groups]
+        let marker = '.venv/.quality-gate-uv-sync'
+        let lock = if ('uv.lock' | path exists) { open --raw uv.lock } else { '' }
+        let fingerprint = ([ (open --raw pyproject.toml) $lock ] | str join (char nul) | hash sha256 | str trim)
+        let current = if ($marker | path exists) { open --raw $marker | str trim } else { '' }
+        if $current == $fingerprint {
+            log info 'uv dependencies are up to date; skipping uv sync.'
+        } else {
+            run-check 'uv sync' uv [sync --frozen --all-groups]
+            mkdir .venv
+            $fingerprint | save --force $marker
+        }
     } else {
         log warning 'No pyproject.toml found; dependency synchronization was skipped.'
     }
@@ -255,19 +295,19 @@ def ast-grep-config [rules: path, language: string]: nothing -> path {
     $config
 }
 
-def local-ast-grep-config []: nothing -> oneof<string, nothing> {
+def local-ast-grep-config []: nothing -> oneof<record, nothing> {
     if ('sgconfig.yaml' | path exists) {
-        'sgconfig.yaml'
+        { path: 'sgconfig.yaml', temporary: false }
     } else if ('rules' | path type) == dir {
         let config = (mktemp | str trim)
         ['ruleDirs:' '  - rules'] | str join (char nl) | $in + (char nl) | save --force $config
-        $config
+        { path: $config, temporary: true }
     } else if ('.quality-gate/sgconfig.yaml' | path exists) {
-        '.quality-gate/sgconfig.yaml'
+        { path: '.quality-gate/sgconfig.yaml', temporary: false }
     } else if ('.quality-gate/rules' | path type) == dir {
         let config = (mktemp | str trim)
         ['ruleDirs:' '  - .quality-gate/rules'] | str join (char nl) | $in + (char nl) | save --force $config
-        $config
+        { path: $config, temporary: true }
     } else {
         null
     }
@@ -275,13 +315,23 @@ def local-ast-grep-config []: nothing -> oneof<string, nothing> {
 
 def lint-strlint [language: string, rules: path] {
     let central = ast-grep-config $rules $language
-    run-check $'($language) organizational ast-grep rules' ast-grep [scan --config $central]
+    try {
+        run-check $'($language) organizational ast-grep rules' ast-grep [scan --config $central]
+    } finally {
+        rm $central
+    }
 
     let local = local-ast-grep-config
     if $local == null {
         log info 'No repository-local ast-grep rules found; skipping.'
     } else {
-        run-check $'($language) repository ast-grep rules' ast-grep [scan --config $local]
+        try {
+            run-check $'($language) repository ast-grep rules' ast-grep [scan --config $local.path]
+        } finally {
+            if $local.temporary {
+                rm $local.path
+            }
+        }
     }
 }
 
@@ -374,11 +424,25 @@ def node-project []: nothing -> bool {
 
 def install-node-dependencies []: nothing -> nothing {
     let manager = node-manager
+    let lockfile = if $manager == npm { 'package-lock.json' } else { 'pnpm-lock.yaml' }
+    let fingerprint = [
+        (open --raw package.json)
+        (open --raw $lockfile)
+        (if ('.node-version' | path exists) { open --raw .node-version } else { $env.QUALITY_GATE_NODE_VERSION? | default '' })
+    ] | str join (char nul) | hash sha256 | str trim
+    let marker = 'node_modules/.quality-gate-dependencies'
+    let current = if ($marker | path exists) { open --raw $marker | str trim } else { '' }
+    if $current == $fingerprint {
+        log info 'Node dependencies are up to date; skipping install.'
+        return
+    }
     if $manager == npm {
         run-check 'npm ci' npm [ci]
     } else {
         run-check 'pnpm install' pnpm [install --frozen-lockfile]
     }
+    mkdir node_modules
+    $fingerprint | save --force $marker
 }
 
 def validate-node-version []: nothing -> nothing {
@@ -518,8 +582,8 @@ def test-go [] {
 }
 
 def test-typescript [] {
-    validate-node-version
     require-local-tests typescript
+    validate-node-version
     if not (package-has-script test) {
         error make {msg: 'TypeScript projects must define scripts.test in package.json.'}
     }
@@ -618,6 +682,59 @@ def run-language-checks [language: string, commands: list<list<string>>]: nothin
         scope: $scope
         directories: $directories
         results: $results
+    }
+}
+
+def run-language-ci [language: string] {
+    let normalized = normalize-language $language
+    let scope = (project)
+    cd $scope
+    let directories = project-directories-or-error
+    mut results = []
+
+    for category in [format lint strlint typecheck] {
+        for directory in $directories {
+            if $normalized not-in (project-languages $directory) {
+                continue
+            }
+            for command in (checks-for-category $category $normalized) {
+                $results = ($results | append (run-project-check $directory $normalized $command.0 $command.2))
+            }
+        }
+    }
+
+    print-console-summary $'($normalized) hook checks' $scope $results
+    let failures = $results | where status == failure
+    if not ($failures | is-empty) {
+        let failure_count = ($failures | length)
+        let result_count = ($results | length)
+        error make {msg: $"($normalized) hook checks failed: ($failure_count) of ($result_count) checks failed."}
+    }
+}
+
+def fix-language [language: string] {
+    let normalized = normalize-language $language
+    let scope = (project)
+    cd $scope
+    for directory in (project-directories-or-error) {
+        if $normalized not-in (project-languages $directory) {
+            continue
+        }
+        cd $directory
+        match $normalized {
+            python => {
+                run-check 'ruff format' ruff [format .]
+                run-check 'ruff check --fix' ruff [check --fix .]
+            }
+            go => {
+                run-check 'gofumpt' gofumpt [-w .]
+                run-check 'goimports' goimports [-w .]
+            }
+            typescript => {
+                run-check 'oxfmt' oxfmt [--write .]
+            }
+        }
+        cd $scope
     }
 }
 
@@ -965,15 +1082,14 @@ def run-command [verb: string, language: string, check: string] {
 }
 
 def main [verb?: string, language?: string, check?: string] {
-    let shortcut = ($env.QUALITY_GATE_SHORTCUT? | default false)
-    if $shortcut and (
-        $verb == null
-        or $language == null
-        or $check != null
-        or $verb not-in [format lint strlint typecheck tests]
-    ) {
-        print 'Usage: qg <format|lint|strlint|typecheck|tests> <py|python|go|ts|typescript>'
-        exit 2
+    if $verb == qg {
+        if $language == null or $check == null or $language not-in [format lint strlint typecheck tests] {
+            print 'Usage: qg <format|lint|strlint|typecheck|tests> <py|python|go|ts|typescript>'
+            exit 2
+        }
+        let category = if $language == tests { 'test' } else { $language }
+        run-language-category $category $check
+        return
     }
     if $verb == ci {
         ci
@@ -993,6 +1109,22 @@ def main [verb?: string, language?: string, check?: string] {
     }
     if $verb == test {
         test
+        return
+    }
+    if $verb == hook {
+        if $language == null {
+            print 'Usage: quality-gate.nu hook <py|python|go|ts|typescript>'
+            exit 2
+        }
+        run-language-ci $language
+        return
+    }
+    if $verb == fix {
+        if $language == null {
+            print 'Usage: quality-gate.nu fix <py|python|go|ts|typescript>'
+            exit 2
+        }
+        fix-language $language
         return
     }
     if $language != null and $check == null and $verb in [format lint strlint typecheck tests] {
