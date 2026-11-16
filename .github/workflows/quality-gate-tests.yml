@@ -16,17 +16,6 @@ on:
       - ".github/**"
   push:
     branches: [master]
-    paths:
-      - "devenv/**"
-      - "devenv.nix"
-      - "devenv.yaml"
-      - "devenv.lock"
-      - "flake.nix"
-      - "flake.lock"
-      - "pkgs/**"
-      - "tests/**"
-      - "release/**"
-      - ".github/**"
   workflow_dispatch:
 
 concurrency:
@@ -54,16 +43,16 @@ jobs:
       - name: Install devenv
         run: nix profile install nixpkgs#devenv
       - name: Validate the flake app
-        run: nix build .#quality-gate --no-link
-      - name: Run internal package tests
-        run: devenv tasks run pkgs:test
-      - name: Checkout release toolkit
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
-        with:
-          repository: prefeitura-rio/actions
-          ref: 13dc55b38fd546b1a2805ba72374efc2cf5c38ba
-          path: release-toolkit
-      - name: Run release script tests
         run: |
-          bash release-toolkit/release/tests/test-version.sh
-          bash release-toolkit/release/tests/test-publish-tags.sh
+          nix build \
+            .#quality-gate \
+            .#quality-gate-python \
+            .#quality-gate-go \
+            .#quality-gate-typescript \
+            --no-link
+      - name: Run Quality Gate self-test
+        run: devenv tasks run quality-gate:self-test
+      - name: Run Quality Gate package tests
+        run: |
+          devenv tasks run complexipy:test
+          devenv tasks run react-doctor:test

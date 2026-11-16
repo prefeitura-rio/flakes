@@ -22,6 +22,13 @@ atomically publish immutable version tag and quality-gate-latest
 The immutable tag is the audit trail. Consumers use `quality-gate-latest`, which
 is moved only by this workflow after the gate passes.
 
+The release workflow compares the four Quality Gate app derivations
+(`quality-gate`, `-python`, `-go` and `-typescript`) across the supported
+systems with the last `quality-gate-v*` tag. Changes to unrelated flakes
+packages, infrastructure profiles or documentation do not create a new
+Quality Gate release. Changes to the Quality Gate bootstrap profile are also
+treated as release-worthy.
+
 ## Consumer synchronization
 
 The GitLab adapter resolves `quality-gate-latest` to one commit SHA at the start
@@ -36,13 +43,12 @@ remains an intentional bypass, with CI as the final barrier.
 
 ## Release toolkit
 
-The release workflow reuses the provider-neutral toolkit from
+The release workflow reuses the provider-neutral workflow from
 `prefeitura-rio/actions`, pinned to commit
-`13dc55b38fd546b1a2805ba72374efc2cf5c38ba`. The flakes repository does not
-duplicate the release scripts. The toolkit's own contract tests are executed
-from that pinned checkout by the Quality Gate Tests workflow.
+`b8e2a9d72d350362d228f48c84e086d9aec679e9`. That reusable workflow performs
+the target validation, version calculation, gate verification and atomic tag
+publication. The flakes repository does not duplicate or checkout the release
+scripts.
 
-```bash
-bash release-toolkit/release/tests/test-version.sh
-bash release-toolkit/release/tests/test-publish-tags.sh
-```
+The release toolkit's contract tests run in the `actions` repository, which is
+the owner of that reusable release infrastructure.

@@ -115,6 +115,11 @@ Python and TypeScript projects. The executable motor is the flake app, published
 as `quality-gate-latest`; the profile does not provide an alternative copy of
 the rules or tools. This keeps the flakes as the only source of truth.
 
+The Quality Gate apps use the separate `nixpkgs-quality-gate` input. The regular
+`nixpkgs` input remains reserved for the other flakes packages, such as
+`prefrio`, so updating Quality Gate tools does not rebuild or change unrelated
+package derivations.
+
 ```bash
 nix run github:prefeitura-rio/flakes/quality-gate-latest#quality-gate -- category lint
 ```

@@ -3,17 +3,16 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    nixpkgs-quality-gate.url = "github:nixos/nixpkgs/nixos-unstable";
     import-tree.url = "github:denful/import-tree";
   };
 
   outputs =
-    {
-      self,
-      nixpkgs,
-      import-tree,
-      ...
-    }:
+    inputs:
     let
+      nixpkgs = inputs.nixpkgs;
+      import-tree = inputs.import-tree;
+      nixpkgsQualityGate = inputs."nixpkgs-quality-gate";
       inherit (nixpkgs) lib;
 
       overlays = import ./overlays.nix { inherit lib import-tree; };
@@ -33,17 +32,22 @@
           overlays = [ overlays.default ];
         };
 
+      qualityGatePkgsFor =
+        system:
+        import nixpkgsQualityGate {
+          inherit system;
+        };
+
       qualityGateFor =
         system: language:
         let
-          pkgs = pkgsFor system;
+          pkgs = qualityGatePkgsFor system;
           goimports = pkgs.runCommand "goimports" { } ''
             mkdir -p $out/bin
             ln -s ${pkgs.gosimports}/bin/gosimports $out/bin/goimports
           '';
           complexipy = pkgs.callPackage ./pkgs/complexipy/_package.nix { };
           react-doctor = pkgs.callPackage ./pkgs/react-doctor/_package.nix { };
-          qualityGateRevision = if self ? rev then self.rev else "dirty";
           commonPackages = with pkgs; [
             ast-grep
             nushell
@@ -83,7 +87,6 @@
             name = if language == null then "quality-gate" else "quality-gate-${language}";
             runtimeInputs = qualityGatePackages;
             text = ''
-              export QUALITY_GATE_REVISION=${lib.escapeShellArg qualityGateRevision}
               export QUALITY_GATE_GO_RULES=${lib.escapeShellArg "${./devenv/files/quality-gate/go/rules}"}
               export QUALITY_GATE_GO_CONFIG=${lib.escapeShellArg "${./devenv/files/quality-gate/go/.golangci.yml}"}
               export QUALITY_GATE_PYTHON_RULES=${lib.escapeShellArg "${./devenv/files/quality-gate/python/rules}"}

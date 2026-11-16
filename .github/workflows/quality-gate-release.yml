@@ -15,39 +15,72 @@ permissions:
   contents: write
 
 jobs:
-  release-gate:
+  quality-gate-change:
     if: github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     permissions:
-      actions: read
       contents: read
     outputs:
-      ready: ${{ steps.gates.outputs.ready }}
+      changed: ${{ steps.compare.outputs.changed }}
     steps:
-      - name: Checkout release toolkit
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
+      - name: Checkout target commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          repository: prefeitura-rio/actions
-          ref: 13dc55b38fd546b1a2805ba72374efc2cf5c38ba
-          path: release-toolkit
-      - name: Check Quality Gate
-        id: gates
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - name: Use devenv binary cache
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        with:
+          name: devenv
+      - name: Compare Quality Gate derivations
+        id: compare
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
           TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          bash release-toolkit/.github/scripts/check-workflow-gates.sh \
-            --repository "$REPOSITORY" \
-            --target-sha "$TARGET_SHA" \
-            --required-workflow "Quality Gate Tests" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+
+          previous_tag="$(git tag --list 'quality-gate-v*' --sort=-v:refname | head -n 1)"
+          if [ -z "$previous_tag" ]; then
+            echo "No previous Quality Gate release exists; the first release is eligible."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git diff --quiet "$previous_tag" "$TARGET_SHA" -- devenv/quality-gate.nix; then
+            echo "The Quality Gate bootstrap profile changed."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          for system in x86_64-linux aarch64-linux aarch64-darwin; do
+            for app in quality-gate quality-gate-python quality-gate-go quality-gate-typescript; do
+              current="$(nix eval --raw \
+                "github:prefeitura-rio/flakes/${TARGET_SHA}#packages.${system}.${app}.drvPath")"
+              previous="$(nix eval --raw \
+                "github:prefeitura-rio/flakes/${previous_tag}#packages.${system}.${app}.drvPath")"
+              if [ "$current" != "$previous" ]; then
+                echo "$app changed for $system:"
+                echo "  previous: $previous"
+                echo "  current:  $current"
+                echo "changed=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            done
+          done
+
+          echo "No Quality Gate derivation changed since $previous_tag."
+          echo "changed=false" >> "$GITHUB_OUTPUT"
 
   release:
-    needs: release-gate
-    if: needs.release-gate.outputs.ready == 'true'
+    needs: quality-gate-change
+    if: ${{ github.event.workflow_run.event == 'push' && needs.quality-gate-change.outputs.changed == 'true' }}
     permissions:
+      actions: read
       contents: write
-    uses: prefeitura-rio/actions/.github/workflows/release.yml@13dc55b38fd546b1a2805ba72374efc2cf5c38ba
+    uses: prefeitura-rio/actions/.github/workflows/release.yml@b8e2a9d72d350362d228f48c84e086d9aec679e9
     with:
       release_branch: master
       target_sha: ${{ github.event.workflow_run.head_sha }}
@@ -55,6 +88,8 @@ jobs:
       bump: minor
       floating_tag: quality-gate-latest
       tag_prefix: quality-gate-v
-      toolkit_ref: 13dc55b38fd546b1a2805ba72374efc2cf5c38ba
+      toolkit_ref: b8e2a9d72d350362d228f48c84e086d9aec679e9
+      require_workflow_gate: true
+      required_workflow: Quality Gate Tests
       git_author_name: CI Release Bot
       git_author_email: ci-release@example.invalid

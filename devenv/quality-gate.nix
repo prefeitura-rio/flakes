@@ -68,6 +68,7 @@ let
       ts|typescript) quality_gate_app="quality-gate-typescript" ;;
     esac
 
+    export QUALITY_GATE_REVISION="$quality_gate_sha"
     exec ${pkgs.nix}/bin/nix run "github:prefeitura-rio/flakes/$quality_gate_sha#$quality_gate_app" -- "$@"
   '';
   qgScript = ''
