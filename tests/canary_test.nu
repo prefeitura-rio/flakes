@@ -3,6 +3,7 @@ use std/testing *
 
 source ../release/promote.nu
 
+const PROMOTE_SCRIPT = path self | path dirname | path join ../release/promote.nu
 const MOVE_TAG_SCRIPT = path self | path dirname | path join ../release/scripts/move-floating-tag.sh
 
 @test
@@ -43,6 +44,11 @@ def test_canary_rejects_invalid_version_tags [] {
         let result = (decide $candidate '' ((date now) - 10day) (date now) 3 true)
         assert equal $result.decision reject
     }
+    let cli_result = (^nu $PROMOTE_SCRIPT validate quality-gate-next '' 2026-01-01 2026-01-10 3 --force | complete)
+    assert equal $cli_result.exit_code 0
+    assert ($cli_result.stdout | str contains '"decision": "reject"')
+    let tag_result = (^bash $MOVE_TAG_SCRIPT --candidate-tag quality-gate-next | complete)
+    assert equal $tag_result.exit_code 1
 }
 
 @test
