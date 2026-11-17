@@ -4,10 +4,8 @@ use std/log
 
 const PYTHON_PROJECT_FILES = [pyproject.toml setup.py]
 const IGNORED_DIRECTORY_NAMES = [
-    .git .github .gitlab node_modules vendor .venv __pycache__ .cache
-    dist build out .next .nuxt coverage docs doc documentation
-    scripts tools bin hack infra deploy k8s helm test tests spec e2e fixtures
-    testdata ci .ci pipeline pipelines
+    .git node_modules vendor .venv __pycache__ .cache
+    dist build out .next .nuxt coverage
 ]
 const IGNORED_TEST_PATH_NAMES = [
     .git node_modules vendor .venv __pycache__ .cache dist build out .next .nuxt coverage
@@ -64,14 +62,48 @@ def ignored-project-path [directory: string, scope: string]: nothing -> bool {
     }
 }
 
-def project-directories []: nothing -> list<string> {
-    let scope = (project)
-    let marker_files = [
+def marker-files-from-git [scope: path]: nothing -> oneof<list<path>, nothing> {
+    let root_result = (do { ^git -C $scope rev-parse --show-toplevel } | complete)
+    if $root_result.exit_code != 0 {
+        return null
+    }
+    let git_root = $root_result.stdout | str trim | path expand
+    let files_result = (do {
+        ^git -C $git_root ls-files --cached --others --exclude-standard
+    } | complete)
+    if $files_result.exit_code != 0 {
+        return null
+    }
+    let scope_path = $scope | path expand
+    $files_result.stdout
+    | lines
+    | where {|file| ($file | str trim | is-not-empty) }
+    | each {|file| $git_root | path join $file | path expand }
+    | where {|file|
+        $file == $scope_path or ($file | str starts-with $'($scope_path)/')
+    }
+    | where {|file| ($file | path basename) in ['go.mod' 'pyproject.toml' 'setup.py' 'package.json' 'tsconfig.json'] }
+}
+
+def marker-files-from-glob [scope: path]: nothing -> list<path> {
+    [
         (glob --no-dir ($'($scope)/**/go.mod'))
         (glob --no-dir ($'($scope)/**/pyproject.toml'))
         (glob --no-dir ($'($scope)/**/setup.py'))
         (glob --no-dir ($'($scope)/**/package.json'))
+        (glob --no-dir ($'($scope)/**/tsconfig.json'))
     ] | flatten
+}
+
+def project-directories []: nothing -> list<string> {
+    let scope = (project)
+    let marker_files = (marker-files-from-git $scope)
+    let marker_files = if $marker_files == null {
+        marker-files-from-glob $scope
+        | where {|file| not (ignored-project-path ($file | path dirname) $scope) }
+    } else {
+        $marker_files
+    }
 
     let directories = $marker_files
     | each {|file| $file | path dirname }
@@ -236,7 +268,14 @@ def lint-python-basedpyright [] {
     if not (python-project) { return }
     sync-python
     warn-local-quality-config ['pyrightconfig.json']
-    run-check 'basedpyright' basedpyright [--project $env.QUALITY_GATE_PYRIGHT_CONFIG .]
+    let arguments = [--project $env.QUALITY_GATE_PYRIGHT_CONFIG --venvpath (project)]
+    let python = (project | path join .venv bin python)
+    let arguments = if ($python | path exists) {
+        $arguments ++ [--pythonpath $python]
+    } else {
+        $arguments
+    }
+    run-check 'basedpyright' basedpyright ($arguments ++ [.])
 }
 
 def ast-grep-config [rules: path, language: string]: nothing -> path {
@@ -283,17 +322,14 @@ def ast-grep-config [rules: path, language: string]: nothing -> path {
 }
 
 def local-ast-grep-config []: nothing -> oneof<record, nothing> {
-    if ('sgconfig.yaml' | path exists) {
-        { path: 'sgconfig.yaml', temporary: false }
-    } else if ('rules' | path type) == dir {
-        let config = (mktemp | str trim)
-        ['ruleDirs:' '  - rules'] | str join (char nl) | $in + (char nl) | save --force $config
-        { path: $config, temporary: true }
-    } else if ('.quality-gate/sgconfig.yaml' | path exists) {
+    if ('.quality-gate/sgconfig.yaml' | path exists) {
         { path: '.quality-gate/sgconfig.yaml', temporary: false }
     } else if ('.quality-gate/rules' | path type) == dir {
         let config = (mktemp | str trim)
-        ['ruleDirs:' '  - .quality-gate/rules'] | str join (char nl) | $in + (char nl) | save --force $config
+        ['ruleDirs:' '  - .quality-gate/rules']
+        | str join (char nl)
+        | $in + (char nl)
+        | save --force $config
         { path: $config, temporary: true }
     } else {
         null
@@ -376,15 +412,14 @@ def lint-go-vet [] {
 
 def typecheck-go [] {
     if not (go-project) { return }
-    run-check 'go build' go [build ./...]
+    run-check 'go build' go [build -o /dev/null ./...]
 }
 
 def node-manager []: nothing -> string {
     if ('pnpm-lock.yaml' | path exists) {
         let package = open package.json
         let declaration = ($package.packageManager? | default '')
-        let valid_declaration = (do { print $declaration | ^grep -Eq '^pnpm@[0-9]+(\.[0-9]+)*(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$' } | complete)
-        if (($declaration | describe) != string) or $valid_declaration.exit_code != 0 {
+        if (($declaration | describe) != string) or not ($declaration =~ '^pnpm@[0-9]+(\.[0-9]+)*(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$') {
             error make {msg: 'pnpm-lock.yaml requires package.json packageManager: pnpm@<version>.'}
         }
         'pnpm'
@@ -459,7 +494,14 @@ def typescript-framework []: nothing -> string {
         'next'
     } else if (package-has-dependency nuxt) or (['nuxt.config.ts' 'nuxt.config.mts' 'nuxt.config.js' 'nuxt.config.mjs' 'nuxt.config.cjs'] | any {|file| $file | path exists}) {
         'nuxt'
-    } else if (package-has-dependency vue) or (glob --no-dir '**/*.vue' | is-not-empty) {
+    } else if (package-has-dependency vue) or (
+        glob --no-dir '**/*.vue'
+        | where {|file|
+            let parts = $file | path split
+            not ($parts | any {|part| $part in ['node_modules' '.git' 'dist' 'build' 'out'] })
+        }
+        | is-not-empty
+    ) {
         'vue'
     } else {
         'none'
@@ -503,7 +545,7 @@ def lint-typescript-typecheck [] {
     validate-node-version
     install-node-dependencies
     let manager = node-manager
-    let config = (typescript-quality-config)
+    let configs = (typescript-quality-configs)
     let framework = typescript-framework
     try {
         if $framework == nuxt {
@@ -513,40 +555,86 @@ def lint-typescript-typecheck [] {
                 run-check 'nuxt prepare' pnpm [exec nuxt prepare]
             }
         }
-        if $framework in [vue nuxt] {
-            if $manager == npm {
-                run-check 'vue-tsc' npm [exec -- vue-tsc --noEmit --project $config]
+        for config in $configs {
+            if $framework in [vue nuxt] {
+                if $manager == npm {
+                    run-check 'vue-tsc' npm [exec -- vue-tsc --noEmit --project $config]
+                } else {
+                    run-check 'vue-tsc' pnpm [exec vue-tsc --noEmit --project $config]
+                }
             } else {
-                run-check 'vue-tsc' pnpm [exec vue-tsc --noEmit --project $config]
-            }
-        } else {
-            if $manager == npm {
-                run-check 'tsc' npm [exec -- tsc --noEmit --project $config]
-            } else {
-                run-check 'tsc' pnpm [exec tsc --noEmit --project $config]
+                if $manager == npm {
+                    run-check 'tsc' npm [exec -- tsc --noEmit --project $config]
+                } else {
+                    run-check 'tsc' pnpm [exec tsc --noEmit --project $config]
+                }
             }
         }
     } finally {
-        rm $config
+        for config in $configs {
+            rm $config
+        }
     }
 }
 
-def typescript-quality-config []: nothing -> path {
-    let config = (mktemp --suffix .json | str trim)
+def typescript-show-config [config: path]: nothing -> record {
+    let result = capture tsc [--showConfig --project $config]
+    if $result.exit_code != 0 {
+        error make {msg: $'Could not expand TypeScript config ($config): ($result.stderr | str trim)'}
+    }
+    try {
+        $result.stdout | from json
+    } catch {|error|
+        error make {msg: $'Could not parse TypeScript config ($config): ($error.msg)'}
+    }
+}
+
+def typescript-project-file [base: path, file: string]: nothing -> path {
+    if ($file | str starts-with '/') {
+        $file | path expand
+    } else {
+        $base | path join $file | path expand
+    }
+}
+
+def typescript-quality-configs []: nothing -> list<path> {
     let central = (open $env.QUALITY_GATE_TYPESCRIPT_CONFIG)
-    {
-        extends: ($env.PWD | path join 'tsconfig.json' | path expand)
-        compilerOptions: $central.compilerOptions
-        include: [
-            ($env.PWD | path join '**/*.ts' | path expand)
-            ($env.PWD | path join '**/*.tsx' | path expand)
-            ($env.PWD | path join '**/*.mts' | path expand)
-            ($env.PWD | path join '**/*.cts' | path expand)
-            ($env.PWD | path join '**/*.vue' | path expand)
-        ]
-        exclude: []
-    } | to json | save --force $config
-    $config
+    let root_config = $env.PWD | path join 'tsconfig.json' | path expand
+    let root = (typescript-show-config $root_config)
+    let references = ($root.references? | default [])
+    let sources = if ($references | is-empty) {
+        [{ base: ($root_config | path dirname), config: $root_config, effective: $root }]
+    } else {
+        $references | each {|reference|
+            let config = typescript-project-file ($root_config | path dirname) $reference.path
+            {
+                base: ($config | path dirname)
+                config: $config
+                effective: (typescript-show-config $config)
+            }
+        }
+    }
+
+    $sources | each {|source|
+        let effective = $source.effective
+        let options = ($effective.compilerOptions? | default {}) | merge $central.compilerOptions
+        let files = ($effective.files? | default [])
+            | each {|file| typescript-project-file $source.base $file }
+        let include = if ($files | is-empty) {
+            ($effective.include? | default [])
+            | each {|pattern| typescript-project-file $source.base $pattern }
+        } else {
+            []
+        }
+        let config = (mktemp --suffix .json | str trim)
+        {
+            compilerOptions: $options
+            files: $files
+            include: $include
+            exclude: []
+        } | to json | save --force $config
+        $config
+    }
 }
 
 def test-python [] {
@@ -666,7 +754,11 @@ def run-language-ci [language: string] {
     let normalized = normalize-language $language
     let scope = (project)
     cd $scope
-    let directories = project-directories-or-error
+    let directories = project-directories
+    if ($directories | is-empty) {
+        print-console-summary $'($normalized) hook checks' $scope []
+        return
+    }
     mut results = []
 
     for category in [format lint strlint typecheck] {
@@ -689,26 +781,40 @@ def run-language-ci [language: string] {
     }
 }
 
+def run-fix-check [name: string, command: string, arguments: list<string>] {
+    log info $'Running ($name)...'
+    let result = capture $command $arguments
+    if ($result.stdout | is-not-empty) {
+        print ($result.stdout | str trim)
+    }
+    if ($result.stderr | is-not-empty) {
+        print -e ($result.stderr | str trim)
+    }
+    if $result.exit_code != 0 {
+        log warning $'($name) returned exit code ($result.exit_code); continuing with the remaining fixes.'
+    }
+}
+
 def fix-language [language: string] {
     let normalized = normalize-language $language
     let scope = (project)
     cd $scope
-    for directory in (project-directories-or-error) {
+    for directory in (project-directories) {
         if $normalized not-in (project-languages $directory) {
             continue
         }
         cd $directory
         match $normalized {
             python => {
-                run-check 'ruff format' ruff [format --config $env.QUALITY_GATE_RUFF_CONFIG .]
-                run-check 'ruff check --fix' ruff [check --config $env.QUALITY_GATE_RUFF_CONFIG --fix .]
+                run-fix-check 'ruff format' ruff [format --config $env.QUALITY_GATE_RUFF_CONFIG .]
+                run-fix-check 'ruff check --fix' ruff [check --config $env.QUALITY_GATE_RUFF_CONFIG --fix .]
             }
             go => {
-                run-check 'gofumpt' gofumpt [-w .]
-                run-check 'goimports' goimports [-w .]
+                run-fix-check 'gofumpt' gofumpt [-w .]
+                run-fix-check 'goimports' goimports [-w .]
             }
             typescript => {
-                run-check 'oxfmt' oxfmt [--config $env.QUALITY_GATE_OXFMT_CONFIG --write .]
+                run-fix-check 'oxfmt' oxfmt [--config $env.QUALITY_GATE_OXFMT_CONFIG --write .]
             }
         }
         cd $scope
@@ -757,7 +863,7 @@ def check-fix [verb: string, language: string, check: string]: nothing -> string
         [lint typescript typecheck] => 'qg typecheck ts'
         [test python pytest] => 'uv run pytest'
         [test go test] => 'go test ./...'
-        [test typescript test] => 'npm test'
+        [test typescript test] => (if ('pnpm-lock.yaml' | path exists) { 'pnpm test' } else { 'npm test' })
         _ => 'See the quality-gate task output above.'
     }
 }
@@ -806,6 +912,10 @@ def xml-escape [value: string]: nothing -> string {
     | str replace --all '>' '&gt;'
     | str replace --all '"' '&quot;'
     | str replace --all "'" '&apos;'
+}
+
+def xml-cdata [value: string]: nothing -> string {
+    $value | str replace --all ']]>' ']]]]><![CDATA[>'
 }
 
 def result-project [result: record, scope: string]: nothing -> string {
@@ -905,12 +1015,13 @@ def write-junit [title: string, scope: string, results: list<record>] {
             $'    <testcase classname="(xml-escape $classname)" name="(xml-escape $name)" />'
         } else {
             let message = xml-escape $result.error
-            let fix = xml-escape $result.fix
+            let raw_message = xml-cdata $result.error
+            let raw_fix = xml-cdata $result.fix
             $'    <testcase classname="(xml-escape $classname)" name="(xml-escape $name)">
-      <failure message="($message)"><![CDATA[($message)
+      <failure message="($message)"><![CDATA[($raw_message)
 
 How to fix:
-($fix)]]></failure>
+($raw_fix)]]></failure>
     </testcase>'
         }
     }

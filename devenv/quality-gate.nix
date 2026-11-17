@@ -78,7 +78,7 @@ let
     if [ -z "$quality_gate_run_ref" ]; then
       quality_gate_run_ref="github:prefeitura-rio/flakes/$quality_gate_sha"
     fi
-    exec ${pkgs.nix}/bin/nix run "$quality_gate_run_ref#$quality_gate_app" -- "$@"
+    exec ${pkgs.nix}/bin/nix --extra-experimental-features 'nix-command flakes' run "$quality_gate_run_ref#$quality_gate_app" -- "$@"
   '';
   qgScript = ''
     def main [...args: string] {
@@ -102,12 +102,14 @@ let
       inherit name files;
       entry = "${pkgs.writeShellScript name ''
         set -eu
+        git_bin="${pkgs.git}/bin/git"
         if [ "$#" -gt 0 ]; then
           export QUALITY_GATE_CHANGED_FILES="$(printf '%s\n' "$@")"
         else
           unset QUALITY_GATE_CHANGED_FILES || true
         fi
         export QUALITY_GATE_RESOLVED_SHA="$(${qualityGateRunner} resolve)"
+        before_status="$("$git_bin" status --porcelain)"
         failed=0
         if ! ${qualityGateRunner} hook ${language}; then
           failed=1
@@ -115,10 +117,15 @@ let
         if [ "$failed" -eq 0 ]; then
           exit 0
         fi
-        echo "Quality Gate applied automatic fixes."
         ${qualityGateRunner} fix ${language}
+        after_status="$("$git_bin" status --porcelain)"
+        if [ "$before_status" = "$after_status" ]; then
+          echo "Quality Gate found no automatic fixes for this failure."
+        else
+          echo "Quality Gate applied automatic fixes. Review the changes, run git add manually, and commit again."
+        fi
         if ${qualityGateRunner} hook ${language}; then
-          echo "Checks pass after the fixes. Review the changes, run git add manually, and commit again."
+          echo "Checks pass after the fixes. Review the changes and run git add manually before committing again."
         else
           echo "Checks still fail after the fixes. Review the diagnostics, run git add manually, and commit again."
         fi
@@ -126,6 +133,7 @@ let
       ''}";
       language = "system";
       pass_filenames = true;
+      require_serial = true;
       stages = [ "pre-commit" ];
     };
 

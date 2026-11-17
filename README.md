@@ -236,7 +236,7 @@ Projects are found recursively under `QUALITY_GATE_PROJECT_DIR`, which defaults 
 | Go         | `go.mod`                               |
 | TypeScript | `package.json` and `tsconfig.json`     |
 
-Each project is checked on its own, so a monorepo reports one result per project, language and check. Hidden directories and generated, vendored, test and operational directories are skipped, such as `node_modules`, `vendor`, `dist`, `build`, `.next`, `test`, `tests`, `fixtures`, `docs`, `scripts`, `infra` and `ci`. The command fails when no project is found.
+Each project is checked on its own, so a monorepo reports one result per project, language and check. Inside a Git repository, discovery uses tracked and non-ignored untracked files, so directories such as `tools/` are valid projects while `node_modules`, `.venv`, `dist` and other ignored files are excluded. Outside Git, a short fallback list excludes generated and dependency directories. The command fails when no project is found.
 
 ### Checks
 
@@ -276,7 +276,7 @@ structure, paths and framework resolution; the Quality Gate overwrites its
 mandatory compiler options. Local `tsconfig` exclusions cannot remove files
 from the Quality Gate scope.
 
-Structural lint is additive. The central ast-grep rules always run first. Then the repository's own rules run, if it has `sgconfig.yaml`, `rules/`, `.quality-gate/sgconfig.yaml` or `.quality-gate/rules/`. A repository can add rules but cannot remove the central ones.
+Structural lint is additive. The central ast-grep rules always run first. Then the repository's own rules run, if it has `.quality-gate/sgconfig.yaml` or `.quality-gate/rules/`. A repository can add rules but cannot remove the central ones. A generic root `rules/` directory or `sgconfig.yaml` is intentionally ignored.
 
 ### Reports
 

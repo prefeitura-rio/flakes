@@ -43,7 +43,7 @@ def run-quality-gate-with-env [root: path, extra: record, ...arguments: string] 
 def run-quality-gate-app [root: path, app: string, ...arguments: string] {
     with-env { QUALITY_GATE_PROJECT_DIR: $root } {
         cd $FLAKE
-        ^nix run $'($FLAKE)#($app)' -- ...$arguments | complete
+        ^nix --extra-experimental-features 'nix-command flakes' run $'($FLAKE)#($app)' -- ...$arguments | complete
     }
 }
 
@@ -163,15 +163,20 @@ def test-qg-script-requires-a-category-and-language [] {
 def test-detects-setup-py-and-ignores-nested-projects [] {
     let root = make-fixture
     try {
+        ^git -C $root init --quiet
         write-fixture-file $root setup.py "from setuptools import setup\nsetup(name='fixture')\n"
         write-fixture-file $root package.json '{"name":"not-typescript"}'
         write-fixture-file $root nested/package.json '{"name":"nested"}'
+        write-fixture-file $root tools/api/pyproject.toml "[project]\nname = 'api'\nversion = '0.1.0'\n"
+        write-fixture-file $root dist/ignored/pyproject.toml "[project]\nname = 'ignored'\n"
         write-fixture-file $root tests/ignored/pyproject.toml "[project]\nname = 'ignored'\n"
+        write-fixture-file $root .gitignore "dist/\ntests/\n"
 
         let result = run-quality-gate $root detect
         assert equal $result.exit_code 0
         assert ($result.stderr | str contains 'Detected project .: python')
-        assert not ($result.stderr | str contains 'nested')
+        assert ($result.stderr | str contains 'Detected project tools/api: python')
+        assert not ($result.stderr | str contains 'dist/ignored')
         assert not ($result.stderr | str contains 'tests/ignored')
     } catch {|error|
         rm --recursive --force $root
@@ -184,6 +189,7 @@ def test-detects-setup-py-and-ignores-nested-projects [] {
 def test-changed-files-limit-detection-to-touched-projects [] {
     let root = make-fixture
     try {
+        ^git -C $root init --quiet
         write-fixture-file $root apps/api/go.mod "module example.com/api\n\ngo 1.23.0\n"
         write-fixture-file $root apps/web/pyproject.toml "[project]\nname = 'web'\nversion = '0.1.0'\n"
         let detection = $root | path join detection.env
@@ -196,6 +202,49 @@ def test-changed-files-limit-detection-to-touched-projects [] {
         assert ($values | str contains 'QUALITY_GATE_PROJECT_COUNT=1')
         assert ($values | str contains 'QUALITY_GATE_LANGUAGES=go')
         assert not ($values | str contains 'python')
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
+def test-hook-skips-when-no-project-is-affected [] {
+    let root = make-fixture
+    try {
+        ^git -C $root init --quiet
+        write-fixture-file $root services/api/go.mod "module example.com/api\n\ngo 1.23.0\n"
+        write-fixture-file $root tools/gen.py "value = 1\n"
+        let result = run-quality-gate-with-env $root {
+            QUALITY_GATE_CHANGED_FILES: "tools/gen.py"
+        } hook python
+        assert equal $result.exit_code 0
+        assert ($result.stdout | str contains 'Summary: all 0 checks passed.')
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
+def test-fix-continues-after-a-nonfixable-ruff-failure [] {
+    let root = make-fixture
+    try {
+        ^git -C $root init --quiet
+        let bin = $root | path join bin
+        let log = $root | path join commands.log
+        write-fixture-file $root services/one/pyproject.toml "[project]\nname = 'one'\nversion = '0.1.0'\n"
+        write-fixture-file $root services/two/pyproject.toml "[project]\nname = 'two'\nversion = '0.1.0'\n"
+        write-fake-tool $bin ruff
+        let result = run-quality-gate-with-env $root {
+            PATH: ($env.PATH | prepend $bin)
+            QUALITY_GATE_FAKE_LOG: $log
+            QUALITY_GATE_FAKE_FAILURE: "true"
+        } fix python
+        assert equal $result.exit_code 0
+        assert equal (open --raw $log | lines | length) 4
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -231,6 +280,18 @@ def test-pnpm-typecheck-requires-a-versioned-package-manager [] {
         let result = run-quality-gate $root typecheck typescript
         assert ($result.exit_code != 0)
         assert (($result.stdout + $result.stderr) | str contains 'requires package.json packageManager')
+
+        let bin = $root | path join bin
+        let log = $root | path join commands.log
+        write-fixture-file $root package.json "{\n  \"name\": \"fixture\",\n  \"private\": true,\n  \"packageManager\": \"pnpm@9.1.0\"\n}\n"
+        write-fake-tool $bin pnpm
+        write-executable ($bin | path join tsc) "#!/usr/bin/env nu\nprint '{\"compilerOptions\":{},\"files\":[]}'\n"
+        let valid = run-quality-gate-with-env $root {
+            PATH: ($env.PATH | prepend $bin)
+            QUALITY_GATE_FAKE_LOG: $log
+        } typecheck typescript
+        assert equal $valid.exit_code 0
+        assert ((open --raw $log) | str contains 'install --frozen-lockfile')
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -287,8 +348,10 @@ def test-failing-check-escapes-junit-diagnostics [] {
         assert ($result.exit_code != 0)
         let junit_content = open --raw $junit
         assert ($junit_content | str contains 'failures="2"')
-        assert ($junit_content | str contains '&lt;bad&gt;')
-        assert ($junit_content | str contains '&amp;')
+        assert ($junit_content | str contains 'message="')
+        assert ($junit_content | str contains '<![CDATA[')
+        assert ($junit_content | str contains 'diagnostic <bad> & "quoted"')
+        assert not ($junit_content | str contains '<![CDATA[golangci-lint failed with exit code 1\n\nDiagnostics:\ndiagnostic &lt;bad&gt;')
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -359,7 +422,7 @@ def test-local-ast-grep-rules-are-run-after-central-rules [] {
         assert equal $result.exit_code 0
         let commands = open --raw $log | lines
         assert equal ($commands | length) 2
-        assert equal ($commands | get 1) 'scan --config sgconfig.yaml'
+        assert equal ($commands | get 1) 'scan --config .quality-gate/sgconfig.yaml'
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -375,14 +438,14 @@ def test-central-ast-grep-rules-reject-invalid-code [] {
             file: main.go
             valid: "package main\n\nimport \"fmt\"\n\nfunc main() { _ = fmt.Errorf(\"failed: %w\", err) }\n"
             invalid: "package main\n\nimport (\n  \"fmt\"\n  \"net/http\"\n)\n\nfunc main() {\n  panic(\"bad\")\n  _, _ = http.Get(\"https://example.com\")\n  _ = fmt.Errorf(\"failed: %v\", err)\n}\n"
-            rules: [no-panic no-http-default-client no-plain-error-wrap]
+            rules: [no-panic no-http-default-client]
         }
         {
             language: python
             file: app.py
             valid: "import ast\nimport logging\n\nlogger = logging.getLogger(__name__)\nvalue = ast.literal_eval(source)\nlogger.info(\"value=%s\", value)\n"
             invalid: "def parse(source):\n    print(eval(source))\n    try:\n        return source\n    except:\n        return None\n"
-            rules: [no-bare-except no-eval no-print]
+            rules: [no-eval]
         }
         {
             language: typescript
@@ -422,7 +485,7 @@ def test-quality-gate-app-runs-the-embedded-script [] {
         write-fixture-file $root go.mod "module example.com/fixture\n\ngo 1.23.0\n"
         let result = with-env { QUALITY_GATE_PROJECT_DIR: $root } {
             cd $FLAKE
-            ^nix run $'($FLAKE)#quality-gate' -- detect | complete
+            ^nix --extra-experimental-features 'nix-command flakes' run $'($FLAKE)#quality-gate' -- detect | complete
         }
         assert equal $result.exit_code 0
         assert ($result.stderr | str contains 'Detected project .: go')
@@ -442,6 +505,8 @@ def test-go-app-runs-real-static-checks [] {
         let passing = run-quality-gate-app $root quality-gate-go ci
         assert equal $passing.exit_code 0
         assert ($passing.stdout | str contains 'Summary: all')
+        let files = glob ($root | path join '*') | each {|file| $file | path basename }
+        assert ($files | all {|file| $file in ['go.mod' 'main.go'] })
 
         write-fixture-file $root main.go "package main\n\nfunc main() { panic(\"forbidden\") }\n"
         let failing = run-quality-gate-app $root quality-gate-go ci
@@ -468,6 +533,18 @@ def test-python-app-runs-real-lint-checks [] {
         let result = run-quality-gate-app $root quality-gate-python category lint
         assert equal $result.exit_code 0
         assert ($result.stdout | str contains 'Summary: all')
+
+        let bin = $root | path join bin
+        let log = $root | path join commands.log
+        write-fake-tool $bin basedpyright
+        let basedpyright = run-quality-gate-with-env $root {
+            PATH: ($env.PATH | prepend $bin)
+            QUALITY_GATE_FAKE_LOG: $log
+        } lint python basedpyright
+        assert equal $basedpyright.exit_code 0
+        let command = open --raw $log
+        assert ($command | str contains $'--venvpath ($root)')
+        assert ($command | str contains $'--pythonpath (($root | path join .venv bin python))')
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -507,6 +584,54 @@ def test-react-project-uses-oxlint-react-and-a11y-rules [] {
         assert ($output | str contains 'react-hooks(rules-of-hooks)')
         assert ($output | str contains 'jsx-a11y(alt-text)')
         assert not ($output | str contains 'react-doctor')
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
+def test-typescript-solution-references-preserve-project-options [] {
+    let root = make-fixture
+    try {
+        let bin = $root | path join bin
+        write-fixture-file $root package.json "{\n  \"name\": \"fixture\",\n  \"private\": true\n}\n"
+        write-fixture-file $root package-lock.json "{\n  \"name\": \"fixture\",\n  \"version\": \"1.0.0\",\n  \"lockfileVersion\": 3,\n  \"requires\": true,\n  \"packages\": {\n    \"\": {\n      \"name\": \"fixture\",\n      \"version\": \"1.0.0\"\n    }\n  }\n}\n"
+        write-fixture-file $root .node-version "22\n"
+        write-fixture-file $root tsconfig.json "{\n  \"files\": [],\n  \"references\": [{\"path\": \"./tsconfig.app.json\"}]\n}\n"
+        write-fixture-file $root tsconfig.app.json "{\n  \"compilerOptions\": {\n    \"jsx\": \"react-jsx\",\n    \"target\": \"ES2022\",\n    \"module\": \"ESNext\"\n  },\n  \"include\": [\"src\"]\n}\n"
+        write-fixture-file $root src/main.tsx "export const value = <div />;\n"
+        write-executable ($bin | path join tsc) ([
+            '#!/usr/bin/env nu'
+            'def --wrapped main [...args: string] {'
+            '    let index = ($args | enumerate | where item == "--project" | get index | first)'
+            '    let project = $args | get ($index + 1)'
+            '    if ($project | str ends-with "tsconfig.app.json") {'
+            "        print '{\"compilerOptions\":{\"jsx\":\"react-jsx\",\"target\":\"es2022\",\"module\":\"esnext\"},\"files\":[\"./src/main.tsx\"]}'"
+            '    } else {'
+            "        print '{\"compilerOptions\":{},\"references\":[{\"path\":\"./tsconfig.app.json\"}]}'"
+            '    }'
+            '}'
+        ] | str join (char nl))
+        write-executable ($bin | path join npm) ([
+            '#!/usr/bin/env nu'
+            'def --wrapped main [...args: string] {'
+            '    let joined = $args | str join " "'
+            '    if ($joined | str contains "--noEmit") {'
+            '        let index = ($args | enumerate | where item == "--project" | get index | first)'
+            '        let config = open ($args | get ($index + 1))'
+            '        if ($config.compilerOptions.jsx? | default null) != "react-jsx" {'
+            '            print "solution compiler options were not preserved"'
+            '            exit 1'
+            '        }'
+            '    }'
+            '}'
+        ] | str join (char nl))
+        let result = run-quality-gate-with-env $root {
+            PATH: ($env.PATH | prepend $bin)
+        } typecheck typescript
+        assert equal $result.exit_code 0
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}

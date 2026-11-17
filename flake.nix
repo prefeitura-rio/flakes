@@ -49,6 +49,7 @@
           complexipy = pkgs.callPackage ./pkgs/complexipy/_package.nix { };
           commonPackages = with pkgs; [
             ast-grep
+            git
             nushell
           ];
           languagePackages = {
