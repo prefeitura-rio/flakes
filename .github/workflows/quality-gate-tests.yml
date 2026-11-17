@@ -55,4 +55,3 @@ jobs:
       - name: Run Quality Gate package tests
         run: |
           devenv tasks run complexipy:test
-          devenv tasks run react-doctor:test

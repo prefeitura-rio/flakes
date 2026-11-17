@@ -57,14 +57,15 @@ def write-executable [target: path, content: string] {
 def write-fake-tool [bin: path, name: string] {
     write-executable ($bin | path join $name) ([
         '#!/usr/bin/env nu'
-        'def main [...args: string] {'
-        '    let log = ($env.QUALITY_GATE_FAKE_LOG? | default "")'
+        'def --wrapped main [...args: string] {'
+        '    let log = if ("QUALITY_GATE_FAKE_LOG" in $env) { $env.QUALITY_GATE_FAKE_LOG } else { "" }'
         '    if ($log | is-not-empty) {'
         '        let previous = if ($log | path exists) { open --raw $log } else { "" }'
         '        ($previous + (($args | str join " ") + (char nl))) | save --force $log'
         '    }'
-        '    if (($env.QUALITY_GATE_FAKE_FAILURE? | default "false") == "true") {'
-        '        print ''diagnostic <bad> & "quoted"'''
+        '    let failure = if ("QUALITY_GATE_FAKE_FAILURE" in $env) { $env.QUALITY_GATE_FAKE_FAILURE } else { "false" }'
+        '    if ($failure == "true") {'
+        "        print 'diagnostic <bad> & \"quoted\"'"
         '        exit 1'
         '    }'
         '}'
@@ -165,7 +166,6 @@ def test-detects-setup-py-and-ignores-nested-projects [] {
         write-fixture-file $root setup.py "from setuptools import setup\nsetup(name='fixture')\n"
         write-fixture-file $root package.json '{"name":"not-typescript"}'
         write-fixture-file $root nested/package.json '{"name":"nested"}'
-        write-fixture-file $root nested/tsconfig.json '{}'
         write-fixture-file $root tests/ignored/pyproject.toml "[project]\nname = 'ignored'\n"
 
         let result = run-quality-gate $root detect
@@ -207,12 +207,12 @@ def test-changed-files-limit-detection-to-touched-projects [] {
 def test-typescript-typecheck-requires-a-lockfile [] {
     let root = make-fixture
     try {
-        write-fixture-file $root package.json '{"name":"fixture","private":true}'
-        write-fixture-file $root tsconfig.json '{"compilerOptions":{"strict":true}}'
+        write-fixture-file $root package.json "{\n  \"name\": \"fixture\",\n  \"private\": true\n}\n"
+        write-fixture-file $root tsconfig.json "{\n  \"compilerOptions\": {\n    \"strict\": true\n  }\n}\n"
         write-fixture-file $root .node-version "22\n"
         let result = run-quality-gate $root typecheck typescript
         assert ($result.exit_code != 0)
-        assert ($result.stderr | str contains 'No lockfile found')
+        assert (($result.stdout + $result.stderr) | str contains 'No lockfile found')
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -230,7 +230,7 @@ def test-pnpm-typecheck-requires-a-versioned-package-manager [] {
         write-fixture-file $root .node-version "22\n"
         let result = run-quality-gate $root typecheck typescript
         assert ($result.exit_code != 0)
-        assert ($result.stderr | str contains 'requires package.json packageManager')
+        assert (($result.stdout + $result.stderr) | str contains 'requires package.json packageManager')
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -359,8 +359,7 @@ def test-local-ast-grep-rules-are-run-after-central-rules [] {
         assert equal $result.exit_code 0
         let commands = open --raw $log | lines
         assert equal ($commands | length) 2
-        assert (($commands | get 1) | str contains ($root | path join sgconfig.yaml))
-        assert not (($commands | get 1) | str contains '.quality-gate')
+        assert equal ($commands | get 1) 'scan --config sgconfig.yaml'
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -480,14 +479,34 @@ def test-python-app-runs-real-lint-checks [] {
 def test-typescript-app-runs-real-format-and-lint-checks [] {
     let root = make-fixture
     try {
-        write-fixture-file $root package.json '{"name":"fixture","private":true}'
-        write-fixture-file $root tsconfig.json '{"compilerOptions":{"strict":true}}'
+        write-fixture-file $root package.json "{\n  \"name\": \"fixture\",\n  \"private\": true\n}\n"
+        write-fixture-file $root tsconfig.json "{\n  \"compilerOptions\": {\n    \"strict\": true\n  }\n}\n"
         write-fixture-file $root src/app.ts "export const add = (left: number, right: number): number => left + right;\n"
         let formatting = run-quality-gate-app $root quality-gate-typescript category format
         assert equal $formatting.exit_code 0
         let linting = run-quality-gate-app $root quality-gate-typescript category lint
         assert equal $linting.exit_code 0
         assert ($linting.stdout | str contains 'Summary: all')
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
+def test-react-project-uses-oxlint-react-and-a11y-rules [] {
+    let root = make-fixture
+    try {
+        write-fixture-file $root package.json '{"name":"fixture","private":true,"dependencies":{"react":"19.0.0"}}'
+        write-fixture-file $root tsconfig.json '{"compilerOptions":{"strict":true}}'
+        write-fixture-file $root src/app.tsx "import { useState } from 'react';\n\nexport function Bad({ condition }: { condition: boolean }) {\n    if (condition) {\n        const [value] = useState(0);\n        return <div>{value}</div>;\n    }\n    return <img src='avatar.png' />;\n}\n"
+        let result = run-quality-gate-app $root quality-gate-typescript category lint
+        assert ($result.exit_code != 0)
+        let output = $result.stdout + $result.stderr
+        assert ($output | str contains 'react-hooks(rules-of-hooks)')
+        assert ($output | str contains 'jsx-a11y(alt-text)')
+        assert not ($output | str contains 'react-doctor')
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}

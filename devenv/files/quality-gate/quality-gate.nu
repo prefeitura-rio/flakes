@@ -489,22 +489,13 @@ def lint-typescript-oxlint [] {
     let paths = [--config $env.QUALITY_GATE_OXLINT_CONFIG .]
     let framework = typescript-framework
     let arguments = if $framework == next {
-        [--react-plugin --nextjs-plugin --ignore-pattern '.next/**' --ignore-pattern 'out/**'] ++ $paths
+        [--react-plugin --jsx-a11y-plugin --nextjs-plugin --ignore-pattern '.next/**' --ignore-pattern 'out/**'] ++ $paths
     } else if (typescript-react-project) {
-        [--react-plugin] ++ $paths
+        [--react-plugin --jsx-a11y-plugin] ++ $paths
     } else {
         $paths
     }
     run-check 'oxlint' oxlint $arguments
-}
-
-def lint-typescript-react-doctor [] {
-    if not (node-project) { return }
-    if (typescript-react-project) {
-        run-check 'react-doctor' react-doctor [.]
-    } else {
-        log info 'No React dependency found; skipping react-doctor.'
-    }
 }
 
 def lint-typescript-typecheck [] {
@@ -599,7 +590,6 @@ def checks-for-category [category: string, language: string]: nothing -> list<li
         ]
         [lint typescript] => [
             [lint typescript oxlint]
-            [lint typescript react-doctor]
         ]
         [strlint python] => [[lint python strlint]]
         [strlint go] => [[lint go strlint]]
@@ -634,7 +624,6 @@ def checks-for-language [language: string]: nothing -> list<list<string>> {
         'typescript' => [
             [format typescript oxfmt]
             [lint typescript oxlint]
-            [lint typescript react-doctor]
             [lint typescript strlint]
             [lint typescript typecheck]
         ]
@@ -764,7 +753,6 @@ def check-fix [verb: string, language: string, check: string]: nothing -> string
         [typecheck go build] => 'go build ./...'
         [format typescript oxfmt] => 'oxfmt --config $QUALITY_GATE_OXFMT_CONFIG --write .'
         [lint typescript oxlint] => 'oxlint --config $QUALITY_GATE_OXLINT_CONFIG .'
-        [lint typescript react-doctor] => 'react-doctor .'
         [lint typescript strlint] => 'ast-grep scan'
         [lint typescript typecheck] => 'qg typecheck ts'
         [test python pytest] => 'uv run pytest'
@@ -1065,7 +1053,6 @@ def run-command [verb: string, language: string, check: string] {
         [typecheck go build] => (typecheck-go)
         [format typescript oxfmt] => (format-typescript)
         [lint typescript oxlint] => (lint-typescript-oxlint)
-        [lint typescript react-doctor] => (lint-typescript-react-doctor)
         [lint typescript strlint] => (lint-strlint typescript $env.QUALITY_GATE_TYPESCRIPT_RULES)
         [lint typescript typecheck] => (lint-typescript-typecheck)
         [typecheck typescript] => (lint-typescript-typecheck)

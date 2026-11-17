@@ -268,11 +268,6 @@ in
         "typescript"
         "oxlint"
       ];
-      "lint:typescript:react-doctor" = nuTask [
-        "lint"
-        "typescript"
-        "react-doctor"
-      ];
       "lint:typescript:strlint" = nuTask [
         "lint"
         "typescript"
@@ -288,7 +283,6 @@ in
       ];
       "lint:typescript:all" = aggregate [
         "lint:typescript:oxlint"
-        "lint:typescript:react-doctor"
         "lint:typescript:strlint"
         "lint:typescript:typecheck"
       ];

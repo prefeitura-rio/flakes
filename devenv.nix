@@ -6,7 +6,6 @@
 }:
 let
   complexipy = pkgs.callPackage ./pkgs/complexipy/_package.nix { };
-  react-doctor = pkgs.callPackage ./pkgs/react-doctor/_package.nix { };
 in
 {
   name = "flakes";
@@ -31,7 +30,7 @@ in
         if ($tests | is-empty) {
           error make { msg: "Quality Gate self-test discovered zero tests" }
         }
-        nutest run-tests --path tests
+        nutest run-tests --path tests --fail
       '';
     };
     "prefrio:test" = {
@@ -53,19 +52,10 @@ in
         nu pkgs/complexipy/tests/complexipy_test.nu
       '';
     };
-    "react-doctor:test" = {
-      cwd = config.devenv.root;
-      package = pkgs.nushell;
-      exec = ''
-        $env.PATH = ($env.PATH | prepend ${react-doctor}/bin)
-        nu pkgs/react-doctor/tests/react_doctor_test.nu
-      '';
-    };
     "pkgs:test".after = [
       "ast-grep:test"
       "prefrio:test"
       "complexipy:test"
-      "react-doctor:test"
       "quality-gate:self-test"
     ];
   };

@@ -6,7 +6,6 @@ Nix packages for Prefeitura do Rio infrastructure. Each package lives in its own
 | --- | --- |
 | [complexipy](pkgs/complexipy/README.md) | Python cognitive-complexity analyzer |
 | [prefrio](pkgs/prefrio/README.md) | CLI for Terragrunt, SOPS and Kubernetes |
-| [react-doctor](pkgs/react-doctor/README.md) | React-specific code quality diagnostics |
 | `quality-gate` | Central Quality Gate app; language-specific apps are also exposed |
 
 Every `.nix` file under `pkgs/` is a module that defines an overlay: `overlays.<name> = final: _prev: { <name> = ...; };`. `overlays.nix` loads them all with [import-tree](https://github.com/denful/import-tree), composes them into `overlays.default`, exposes each one as `overlays.<name>`, and builds `packages.<system>` from that same overlay. A file or folder whose name starts with `_` is skipped, so a helper that is not a module must start with `_`.
@@ -245,11 +244,11 @@ Each project is checked on its own, so a monorepo reports one result per project
 | ---------- | --------------------- | -------------------------------------------- | ------- | -------------------------- | ------------------------------------ |
 | Python     | `ruff format --check` | `ruff check`, `complexipy`                   | ast-grep | `basedpyright`             | `uv run pytest`                      |
 | Go         | `gofumpt`, `goimports` | `golangci-lint`, `go vet`                  | ast-grep | `go build ./...`           | `go test ./...`                      |
-| TypeScript | `oxfmt`               | `oxlint`, `react-doctor` (React projects)    | ast-grep | `tsc`, `vue-tsc` or `nuxt` | `npm test` or `pnpm test`            |
+| TypeScript | `oxfmt`               | `oxlint` (React/Next/a11y plugins when applicable) | ast-grep | `tsc`, `vue-tsc` or `nuxt` | `npm test` or `pnpm test` |
 
 TypeScript handling is framework aware:
 
-- Next.js enables the Oxlint React and Next.js plugins and ignores `.next/` and `out/`. React projects enable the React plugin and run `react-doctor`.
+- Next.js enables the Oxlint React, JSX accessibility and Next.js plugins and ignores `.next/` and `out/`. React projects enable the React and JSX accessibility plugins.
 - Vue `<script>` blocks, including the `setup` and `lang` variants, are scanned by the shared ast-grep rules.
 - Typecheck is always invoked by the central runner (`tsc` or `vue-tsc`) with
   the mandatory Quality Gate compiler options. Nuxt projects run `nuxt prepare`
@@ -291,7 +290,7 @@ Every category prints a Markdown table to the terminal with one row per project,
 | `QUALITY_GATE_PROJECT_DIR`      | directory to scan                                 |
 | `QUALITY_GATE_NODE_VERSION`     | Node.js version when there is no `.node-version`  |
 
-The tools, including `complexipy` and `react-doctor`, are pinned by this repository, so a project's `devenv.lock` fixes the versions of both the tools and the rules.
+The tools, including `complexipy` and Oxlint, are pinned by this repository, so a project's `devenv.lock` fixes the versions of both the tools and the rules.
 
 ## Development
 

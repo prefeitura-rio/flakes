@@ -47,7 +47,6 @@
             ln -s ${pkgs.gosimports}/bin/gosimports $out/bin/goimports
           '';
           complexipy = pkgs.callPackage ./pkgs/complexipy/_package.nix { };
-          react-doctor = pkgs.callPackage ./pkgs/react-doctor/_package.nix { };
           commonPackages = with pkgs; [
             ast-grep
             nushell
@@ -71,7 +70,6 @@
               oxfmt
               oxlint
               pnpm
-              react-doctor
               typescript
             ];
           };
