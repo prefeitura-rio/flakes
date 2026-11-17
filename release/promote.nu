@@ -11,6 +11,18 @@ export def decide [
     if ($candidate | is-empty) {
         return { decision: 'noop', reason: 'No candidate version was requested.' }
     }
+    if not ($candidate =~ '^quality-gate-v[0-9]+\.[0-9]+\.[0-9]+$') {
+        return {
+            decision: 'reject'
+            reason: 'The candidate must match quality-gate-vX.Y.Z.'
+        }
+    }
+    if ($current | is-not-empty) and not ($current =~ '^quality-gate-v[0-9]+\.[0-9]+\.[0-9]+$') {
+        return {
+            decision: 'reject'
+            reason: 'The current stable version has an invalid format.'
+        }
+    }
     if $candidate == $current {
         return { decision: 'noop', reason: 'The requested version is already latest.' }
     }
