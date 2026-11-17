@@ -42,6 +42,19 @@ period. A PR changing `latest` is validated by `release/promote.nu` and a push
 of the approved PR promotes `quality-gate-latest`. The manual workflow supports
 an approved emergency rollback to any existing immutable version tag.
 
+Before the first approved promotion, `quality-gate-latest` does not exist. The
+default consumer configuration intentionally fails with an explicit
+unresolved-reference message instead of silently selecting an untested
+revision.
+
+To opt a consumer into the canary during the bake period, set:
+
+- local hooks: `QUALITY_GATE_REF=quality-gate-next`;
+- GitLab CI: `PREFRIO_REF=quality-gate-next`.
+
+The canary is opt-in. `quality-gate-latest` remains the stable channel and is
+only updated by the promotion workflow.
+
 ## Consumer synchronization
 
 The GitLab adapter resolves `quality-gate-latest` to one commit SHA at the start
