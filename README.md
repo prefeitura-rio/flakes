@@ -278,6 +278,21 @@ from the Quality Gate scope.
 
 Structural lint is additive. The central ast-grep rules always run first. Then the repository's own rules run, if it has `.quality-gate/sgconfig.yaml` or `.quality-gate/rules/`. A repository can add rules but cannot remove the central ones. A generic root `rules/` directory or `sgconfig.yaml` is intentionally ignored.
 
+### Central exclusions
+
+Repositories may add `.quality-gate/exclude` at the project root. It uses
+one path/glob per line, with blank lines and `#` comments ignored. Exclusions
+are intended only for generated code, migrations and vendored code; they cannot
+disable an individual rule. The runner applies the paths to project discovery,
+Python/Ruff, TypeScript/Oxlint/Oxfmt, ast-grep, basedpyright and golangci-lint.
+Keep this file under CODEOWNERS review in consumers.
+
+```text
+# Generated client code
+generated/
+db/migrations/**
+```
+
 ### Reports
 
 Every category prints a Markdown table to the terminal with one row per project, language and check, and the output of a failing check is printed as it runs. These variables write reports to files. The Markdown and JUnit reports also include each failure's output and the command that fixes it:
@@ -291,6 +306,13 @@ Every category prints a Markdown table to the terminal with one row per project,
 | `QUALITY_GATE_NODE_VERSION`     | Node.js version when there is no `.node-version`  |
 
 The tools, including `complexipy` and Oxlint, are pinned by this repository, so a project's `devenv.lock` fixes the versions of both the tools and the rules.
+
+### Report-only rollout
+
+The default mode is blocking. A consumer may temporarily set
+`QUALITY_GATE_MODE=report` while adopting the curated policy. All checks and
+reports still run, but failures are marked `REPORT-ONLY` and do not fail the
+job or hook. Removing the variable returns the consumer to blocking mode.
 
 ## Development
 

@@ -1,9 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/crates/oxc_linter/src/rules/schema.json",
   "plugins": ["typescript", "vue", "react", "react-hooks", "jsx-a11y"],
-  "categories": {
-    "correctness": "error"
-  },
   "rules": {
     "no-debugger": "error",
     "eqeqeq": ["error", "always"],

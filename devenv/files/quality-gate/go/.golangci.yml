@@ -9,9 +9,11 @@ output:
     - file
 
 linters:
-  default: all
+  default: none
   enable:
     - errcheck
+    - errorlint
+    - forbidigo
     - govet
     - staticcheck
     - bodyclose

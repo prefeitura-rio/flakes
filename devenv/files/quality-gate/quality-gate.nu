@@ -109,6 +109,7 @@ def project-directories []: nothing -> list<string> {
     | each {|file| $file | path dirname }
     | uniq
     | where {|directory| not (ignored-project-path $directory $scope) }
+    | where {|directory| not (quality-gate-path-excluded $directory) }
     | where {|directory| (project-languages $directory) | is-not-empty }
     | sort
 
@@ -168,6 +169,10 @@ def skip [language: string] {
     log warning $'No ($language) project was found in ($env.PWD); skipping.'
 }
 
+def report-only []: nothing -> bool {
+    ($env.QUALITY_GATE_MODE? | default 'block') == 'report'
+}
+
 def capture [command: string, arguments: list<string>]: nothing -> record {
     run-external $command ...$arguments | complete
 }
@@ -205,21 +210,53 @@ def warn-local-quality-config [files: list<string>] {
     }
 }
 
+def quality-gate-exclude-patterns []: nothing -> list<string> {
+    if not ('.quality-gate/exclude' | path exists) {
+        return []
+    }
+    open --raw .quality-gate/exclude
+    | lines
+    | each {|line| $line | str trim }
+    | where {|line| ($line | is-not-empty) and not ($line | str starts-with '#') }
+}
+
+def quality-gate-path-excluded [candidate: path]: nothing -> bool {
+    let relative = ($candidate | path relative-to (project))
+    let normalized = ($relative | str replace --all '\\' '/')
+    quality-gate-exclude-patterns
+    | any {|pattern|
+        let base = $pattern
+            | str trim
+            | str replace --all '/**' ''
+            | str replace --all '/**' ''
+            | str trim --char '/'
+        $normalized == $base or ($normalized | str starts-with $'($base)/')
+    }
+}
+
+def exclusion-arguments [flag: string]: nothing -> list<string> {
+    quality-gate-exclude-patterns
+    | each {|pattern| [$flag $pattern] }
+    | flatten
+}
+
 def sync-python []: nothing -> nothing {
-    if ('pyproject.toml' | path exists) {
-        let marker = '.venv/.quality-gate-uv-sync'
-        let lock = if ('uv.lock' | path exists) { open --raw uv.lock } else { '' }
-        let fingerprint = ([ (open --raw pyproject.toml) $lock ] | str join (char nul) | hash sha256 | str trim)
-        let current = if ($marker | path exists) { open --raw $marker | str trim } else { '' }
-        if $current == $fingerprint {
-            log info 'uv dependencies are up to date; skipping uv sync.'
-        } else {
-            run-check 'uv sync' uv [sync --frozen --all-groups]
-            mkdir .venv
-            $fingerprint | save --force $marker
-        }
+    if not ('pyproject.toml' | path exists) {
+        error make {msg: 'Python typecheck/tests require pyproject.toml managed by uv; setup.py-only projects are unsupported for dependency-aware checks.'}
+    }
+    if not ('uv.lock' | path exists) {
+        error make {msg: 'Python typecheck/tests require uv.lock. Run `uv lock` and commit the lockfile.'}
+    }
+
+    let marker = '.venv/.quality-gate-uv-sync'
+    let fingerprint = ([ (open --raw pyproject.toml) (open --raw uv.lock) ] | str join (char nul) | hash sha256 | str trim)
+    let current = if ($marker | path exists) { open --raw $marker | str trim } else { '' }
+    if $current == $fingerprint {
+        log info 'uv dependencies are up to date; skipping uv sync.'
     } else {
-        log warning 'No pyproject.toml found; dependency synchronization was skipped.'
+        run-check 'uv sync' uv [sync --frozen --all-groups]
+        mkdir .venv
+        $fingerprint | save --force $marker
     }
 }
 
@@ -234,10 +271,12 @@ def python-project []: nothing -> bool {
 
 def format-python [] {
     if not (python-project) { return }
-    sync-python
     warn-local-quality-config ['ruff.toml' '.ruff.toml']
 
-    let result = capture ruff [format --check --config $env.QUALITY_GATE_RUFF_CONFIG .]
+    let arguments = [format --check --config $env.QUALITY_GATE_RUFF_CONFIG]
+        ++ (exclusion-arguments '--extend-exclude')
+        ++ [.]
+    let result = capture ruff $arguments
     if $result.exit_code == 0 {
         print 'ruff format: all files are correctly formatted.'
         return
@@ -245,22 +284,25 @@ def format-python [] {
 
     if ($result.stdout | is-not-empty) { print ($result.stdout | str trim) }
     if ($result.stderr | is-not-empty) { print -e ($result.stderr | str trim) }
-    let diff = capture ruff [format --diff --config $env.QUALITY_GATE_RUFF_CONFIG .]
+    let diff = capture ruff ([format --diff --config $env.QUALITY_GATE_RUFF_CONFIG]
+        ++ (exclusion-arguments '--extend-exclude')
+        ++ [.])
     if ($diff.stdout | is-not-empty) { print ($diff.stdout | str trim) }
     error make {msg: 'ruff format found formatting differences; run `qg format py`'}
 }
 
 def lint-python [] {
     if not (python-project) { return }
-    sync-python
     warn-local-quality-config ['ruff.toml' '.ruff.toml']
-    run-check 'ruff check' ruff [check --config $env.QUALITY_GATE_RUFF_CONFIG .]
+    run-check 'ruff check' ruff (
+        [check --config $env.QUALITY_GATE_RUFF_CONFIG]
+        ++ (exclusion-arguments '--extend-exclude')
+        ++ [.]
+    )
 }
 
 def lint-python-complexipy [] {
     if not (python-project) { return }
-    sync-python
-
     run-check 'complexipy' complexipy [.]
 }
 
@@ -268,22 +310,46 @@ def lint-python-basedpyright [] {
     if not (python-project) { return }
     sync-python
     warn-local-quality-config ['pyrightconfig.json']
-    let arguments = [--project $env.QUALITY_GATE_PYRIGHT_CONFIG]
+    let config = (python-quality-config)
+    let arguments = [--project $config]
     let python = (project | path join .venv bin python)
     let arguments = if ($python | path exists) {
         $arguments ++ [--pythonpath $python]
     } else {
         $arguments
     }
-    run-check 'basedpyright' basedpyright ($arguments ++ [.])
+    try {
+        run-check 'basedpyright' basedpyright ($arguments ++ [.])
+    } finally {
+        rm $config
+    }
+}
+
+def python-quality-config []: nothing -> path {
+    let central = open $env.QUALITY_GATE_PYRIGHT_CONFIG
+    let excludes = quality-gate-exclude-patterns
+        | each {|pattern| (project | path join $pattern | path expand) }
+    let config = mktemp --suffix .json | str trim
+    $central
+    | upsert exclude $excludes
+    | to json
+    | save --force $config
+    $config
 }
 
 def ast-grep-config [rules: path, language: string]: nothing -> path {
     let config = (mktemp | str trim)
+    let ignores = quality-gate-exclude-patterns
+    let ignore_lines = if ($ignores | is-empty) {
+        []
+    } else {
+        ['ignores:'] ++ ($ignores | each {|pattern| $'  - ($pattern)'})
+    }
     let content = if $language == typescript {
         [
             'ruleDirs:'
             $'  - ($rules)'
+            ...$ignore_lines
             'languageGlobs:'
             '  typescript:'
             '    - "*.ts"'
@@ -315,7 +381,9 @@ def ast-grep-config [rules: path, language: string]: nothing -> path {
             '    injected: [javascript, typescript]'
         ] | str join (char nl) | $in + (char nl)
     } else {
-        ['ruleDirs:' $'  - ($rules)'] | str join (char nl) | $in + (char nl)
+        (['ruleDirs:' $'  - ($rules)'] ++ $ignore_lines)
+        | str join (char nl)
+        | $in + (char nl)
     }
     $content | save --force $config
     $config
@@ -402,7 +470,27 @@ def format-go-goimports [] {
 def lint-go-golangci [] {
     if not (go-project) { return }
     warn-local-quality-config ['.golangci.yml' '.golangci.yaml' '.golangci.toml' '.golangci.json']
-    run-check 'golangci-lint' golangci-lint [run --config $env.QUALITY_GATE_GO_CONFIG]
+    let config = (go-quality-config)
+    try {
+        run-check 'golangci-lint' golangci-lint [run --config $config]
+    } finally {
+        rm $config
+    }
+}
+
+def go-quality-config []: nothing -> path {
+    let central = open $env.QUALITY_GATE_GO_CONFIG
+    let paths = quality-gate-exclude-patterns
+        | each {|pattern| $pattern | str replace --all '*' '.*' }
+    let exclusions = $central.linters.exclusions | upsert paths (
+        (($central.linters.exclusions.paths? | default []) ++ $paths) | uniq
+    )
+    let config = mktemp --suffix .yml | str trim
+    $central
+    | upsert linters ($central.linters | upsert exclusions $exclusions)
+    | to yaml
+    | save --force $config
+    $config
 }
 
 def lint-go-vet [] {
@@ -515,7 +603,11 @@ def typescript-react-project []: nothing -> bool {
 def format-typescript [] {
     if not (node-project) { return }
     warn-local-quality-config ['.oxfmtrc.json' '.oxfmtrc.jsonc' 'oxfmt.config.js' 'oxfmt.config.mjs' 'oxfmt.config.ts' 'oxfmt.config.mts']
-    let result = capture oxfmt [--config $env.QUALITY_GATE_OXFMT_CONFIG --list-different .]
+    let result = capture oxfmt (
+        [--config $env.QUALITY_GATE_OXFMT_CONFIG]
+        ++ (exclusion-arguments '--ignore-pattern')
+        ++ [--list-different .]
+    )
     if $result.exit_code == 0 {
         print 'oxfmt: all files are correctly formatted.'
     } else {
@@ -528,7 +620,11 @@ def format-typescript [] {
 def lint-typescript-oxlint [] {
     if not (node-project) { return }
     warn-local-quality-config ['.oxlintrc.json' '.oxlintrc.yaml' '.oxlintrc.yml' 'oxlint.config.js' 'oxlint.config.mjs' 'oxlint.config.ts']
-    let paths = [--config $env.QUALITY_GATE_OXLINT_CONFIG .]
+    let paths = (
+        [--config $env.QUALITY_GATE_OXLINT_CONFIG]
+        ++ (exclusion-arguments '--ignore-pattern')
+        ++ [.]
+    )
     let framework = typescript-framework
     let arguments = if $framework == next {
         [--react-plugin --jsx-a11y-plugin --nextjs-plugin --ignore-pattern '.next/**' --ignore-pattern 'out/**'] ++ $paths
@@ -780,7 +876,10 @@ def run-language-ci [language: string] {
     if not ($failures | is-empty) {
         let failure_count = ($failures | length)
         let result_count = ($results | length)
-        error make {msg: $"($normalized) hook checks failed: ($failure_count) of ($result_count) checks failed."}
+        if not (report-only) {
+            error make {msg: $"($normalized) hook checks failed: ($failure_count) of ($result_count) checks failed."}
+        }
+        log warning $'REPORT-ONLY: ($normalized) hook checks found ($failure_count) of ($result_count) failed checks.'
     }
 }
 
@@ -837,7 +936,10 @@ def report-language-checks [title: string, language: string, commands: list<list
     if not ($failures | is-empty) {
         let failure_count = ($failures | length)
         let result_count = ($run.results | length)
-        error make {msg: $"($title) failed: ($failure_count) of ($result_count) checks failed."}
+        if not (report-only) {
+            error make {msg: $"($title) failed: ($failure_count) of ($result_count) checks failed."}
+        }
+        log warning $'REPORT-ONLY: ($title) found ($failure_count) of ($result_count) failed checks.'
     }
 }
 
@@ -933,6 +1035,7 @@ def print-console-summary [title: string, scope: string, results: list<record>] 
     print $'Quality Gate — ($title)'
     print $'Scope: ($scope)'
     print $'Revision: ($revision)'
+    print $'Mode: (if (report-only) { "report-only" } else { "blocking" })'
     print ''
     print '| Project | Language | Check | Outcome |'
     print '| --- | --- | --- | --- |'
@@ -988,11 +1091,14 @@ How to fix it:
         }
     }
     let revision = $env.QUALITY_GATE_REVISION? | default 'unknown'
+    let mode = if (report-only) { 'report-only' } else { 'blocking' }
     let content = [
         $'# Quality Gate — ($title)'
         ''
         $'Scope: `($scope)`'
         $'Revision: `($revision)`'
+        $'Mode: `($mode)`'
+        (if (report-only) { '> REPORT-ONLY: failures are reported but do not block this execution.' } else { '' })
         ''
         '| Project | Language | Check | Outcome |'
         '| --- | --- | --- | --- |'
@@ -1082,7 +1188,10 @@ def run-category [category: string] {
         let failure_count = ($failures | length)
         let result_count = ($run.results | length)
         let project_count = ($run.directories | length)
-        error make {msg: $"($title) failed: ($failure_count) of ($result_count) checks failed across ($project_count) projects."}
+        if not (report-only) {
+            error make {msg: $"($title) failed: ($failure_count) of ($result_count) checks failed across ($project_count) projects."}
+        }
+        log warning $'REPORT-ONLY: ($title) found ($failure_count) of ($result_count) failed checks across ($project_count) projects.'
     }
 }
 
@@ -1123,7 +1232,10 @@ def test [] {
     if not ($failures | is-empty) {
         let failure_count = ($failures | length)
         let result_count = ($run.results | length)
-        error make {msg: $"Tests failed: ($failure_count) of ($result_count) test runners failed."}
+        if not (report-only) {
+            error make {msg: $"Tests failed: ($failure_count) of ($result_count) test runners failed."}
+        }
+        log warning $'REPORT-ONLY: tests found ($failure_count) failed test runners.'
     }
 }
 
@@ -1145,7 +1257,10 @@ def ci [] {
     if not ($failures | is-empty) {
         let failure_count = ($failures | length)
         let result_count = ($results | length)
-        error make {msg: $"Quality gate failed: ($failure_count) of ($result_count) checks failed across ($directories | length) projects."}
+        if not (report-only) {
+            error make {msg: $"Quality gate failed: ($failure_count) of ($result_count) checks failed across ($directories | length) projects."}
+        }
+        log warning $'REPORT-ONLY: quality gate found ($failure_count) of ($result_count) failed checks.'
     }
 }
 

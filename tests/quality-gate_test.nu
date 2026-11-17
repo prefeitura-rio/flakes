@@ -4,6 +4,7 @@ use std/testing *
 const SCRIPT = path self | path dirname | path join ../devenv/files/quality-gate/quality-gate.nu
 const FLAKE = path self | path dirname | path join ..
 const QUALITY_GATE_FILES = path self | path dirname | path join ../devenv/files/quality-gate
+const POLICY_SNAPSHOT = path self | path dirname | path join snapshots quality-gate-policy.json
 
 def write-fixture-file [root: path, relative: string, content: string] {
     let target = $root | path join $relative
@@ -229,6 +230,25 @@ def test-hook-skips-when-no-project-is-affected [] {
 }
 
 @test
+def test-central-exclude-removes-a-project-from-the-gate [] {
+    let root = make-fixture
+    try {
+        ^git -C $root init --quiet
+        write-fixture-file $root services/api/go.mod "module example.com/api\n\ngo 1.23.0\n"
+        write-fixture-file $root legacy/old/pyproject.toml "[project]\nname = 'old'\nversion = '0.1.0'\n"
+        write-fixture-file $root .quality-gate/exclude "legacy/\n"
+        let result = run-quality-gate $root detect
+        assert equal $result.exit_code 0
+        assert ($result.stderr | str contains 'Detected project services/api: go')
+        assert not ($result.stderr | str contains 'legacy/old')
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
 def test-fix-continues-after-a-nonfixable-ruff-failure [] {
     let root = make-fixture
     try {
@@ -262,6 +282,22 @@ def test-typescript-typecheck-requires-a-lockfile [] {
         let result = run-quality-gate $root typecheck typescript
         assert ($result.exit_code != 0)
         assert (($result.stdout + $result.stderr) | str contains 'No lockfile found')
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
+def test-python-typecheck-requires-uv-lockfile [] {
+    let root = make-fixture
+    try {
+        write-fixture-file $root pyproject.toml "[project]\nname = 'fixture'\nversion = '0.1.0'\n"
+        write-fixture-file $root app.py "value: int = 1\n"
+        let result = run-quality-gate $root typecheck python
+        assert ($result.exit_code != 0)
+        assert (($result.stdout + $result.stderr) | str contains 'require uv.lock')
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -360,6 +396,31 @@ def test-failing-check-escapes-junit-diagnostics [] {
 }
 
 @test
+def test-report-mode-reports-failures-without-blocking [] {
+    let root = make-fixture
+    try {
+        let bin = $root | path join bin
+        let summary = $root | path join summary.md
+        write-fixture-file $root go.mod "module example.com/fixture\n\ngo 1.23.0\n"
+        write-fake-tool $bin golangci-lint
+        write-fake-tool $bin go
+        let result = run-quality-gate-with-env $root {
+            PATH: ($env.PATH | prepend $bin)
+            QUALITY_GATE_FAKE_FAILURE: "true"
+            QUALITY_GATE_MODE: "report"
+            QUALITY_GATE_SUMMARY_FILE: $summary
+        } category lint
+        assert equal $result.exit_code 0
+        assert ((open --raw $summary) | str contains 'Mode: `report-only`')
+        assert ((open --raw $summary) | str contains 'REPORT-ONLY')
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
 def test-typecheck-failure-suggests-go-build [] {
     let root = make-fixture
     try {
@@ -397,7 +458,8 @@ def test-local-go-config-is-warned-and-central-config-is-used [] {
         } lint go golangci
         assert equal $result.exit_code 0
         assert ($result.stderr | str contains 'Ignoring local quality configuration')
-        assert ((open --raw $log) | str contains $'--config (($QUALITY_GATE_FILES | path join go .golangci.yml))')
+        assert ((open --raw $log) | str contains '--config')
+        assert not ((open --raw $log) | str contains ($root | path join .golangci.yml))
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -476,6 +538,29 @@ def test-central-ast-grep-rules-reject-invalid-code [] {
         }
         rm --recursive --force $root
     }
+}
+
+@test
+def test-curated-policy-snapshot-is-current [] {
+    let snapshot = open $POLICY_SNAPSHOT
+    let ruff = open ($QUALITY_GATE_FILES | path join python ruff.toml)
+    let pyright = open ($QUALITY_GATE_FILES | path join python pyrightconfig.json)
+    let golangci = open ($QUALITY_GATE_FILES | path join go .golangci.yml)
+    let oxlint = open ($QUALITY_GATE_FILES | path join typescript .oxlintrc.json)
+    let actual = {
+        python: {
+            ruff_select: $ruff.lint.select
+            ruff_ignore: $ruff.lint.ignore
+            basedpyright_mode: $pyright.typeCheckingMode
+        }
+        go: {
+            linters_enable: $golangci.linters.enable
+        }
+        typescript: {
+            rules: $oxlint.rules
+        }
+    }
+    assert equal $actual $snapshot
 }
 
 @test
