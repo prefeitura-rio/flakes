@@ -1,0 +1,55 @@
+version: 1
+required_jobs:
+  - quality-gate:detect
+  - quality-gate:format
+  - quality-gate:lint
+  - quality-gate:strlint
+  - quality-gate:typecheck
+  - quality-gate:tests
+projects:
+  - id: 48
+    name: python-battlegrounds
+    ref: main
+    expected_findings:
+      - quality-gate:format
+      - quality-gate:lint
+      - quality-gate:typecheck
+    expected_skipped:
+      - quality-gate:tests
+  - id: 49
+    name: go-battlegrounds
+    ref: main
+    expected_findings:
+      - quality-gate:format
+      - quality-gate:lint
+      - quality-gate:strlint
+    expected_skipped:
+      - quality-gate:tests
+  - id: 50
+    name: typescript-battlegrounds
+    ref: main
+    expected_findings:
+      - quality-gate:format
+      - quality-gate:lint
+      - quality-gate:strlint
+    expected_skipped:
+      - quality-gate:tests
+  - id: 51
+    name: vue-battlegrounds
+    ref: main
+    expected_findings:
+      - quality-gate:format
+      - quality-gate:lint
+      - quality-gate:strlint
+    expected_skipped:
+      - quality-gate:tests
+  - id: 78
+    name: multi-repo-battlegrounds
+    ref: main
+    expected_findings:
+      - quality-gate:format
+      - quality-gate:lint
+      - quality-gate:strlint
+      - quality-gate:typecheck
+    expected_skipped:
+      - quality-gate:tests
