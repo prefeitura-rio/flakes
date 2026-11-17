@@ -333,6 +333,20 @@ the default `QUALITY_GATE_MODE=block` execution. Consumers that analyze
 fixtures or canary sandboxes can allow only the configured `finding` results;
 an `engine` result must remain unhealthy.
 
+Each failed check is classified in the console, Markdown and JUnit reports:
+
+- `finding`: the checked code did not satisfy the central policy (normally
+  tool exit code `1`). This is an expected apuração result for a codebase that
+  still has findings and is not evidence that the Quality Gate motor failed.
+- `engine`: the motor or its execution environment failed (for example a
+  missing tool/configuration, an unexpected command failure, or an exit code
+  other than `1`). Engine failures are release and canary-health failures.
+
+The distinction is intentionally preserved even though both categories block
+the default `QUALITY_GATE_MODE=block` execution. Consumers that analyze
+fixtures or canary sandboxes can allow only the configured `finding` results;
+an `engine` result must remain unhealthy.
+
 ### Report-only rollout
 
 The default mode is blocking. A consumer may temporarily set
