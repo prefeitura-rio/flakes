@@ -55,3 +55,20 @@ jobs:
       - name: Run Quality Gate package tests
         run: |
           devenv tasks run complexipy:test
+
+  darwin-build:
+    name: Quality Gate / aarch64-darwin build
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - name: Build Darwin apps
+        run: |
+          nix build \
+            .#packages.aarch64-darwin.quality-gate \
+            .#packages.aarch64-darwin.quality-gate-python \
+            .#packages.aarch64-darwin.quality-gate-go \
+            .#packages.aarch64-darwin.quality-gate-typescript \
+            --no-link

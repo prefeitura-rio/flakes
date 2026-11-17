@@ -372,6 +372,7 @@ def test-format-category-writes-summary-and-junit [] {
         let summary = $root | path join summary.md
         let junit = $root | path join junit.xml
         write-fixture-file $root go.mod "module example.com/fixture\n\ngo 1.23.0\n"
+        write-fixture-file $root main.go "package main\n\nfunc main() {}\n"
         write-fake-tool $bin gofumpt
         write-fake-tool $bin goimports
         let result = run-quality-gate-with-env $root {

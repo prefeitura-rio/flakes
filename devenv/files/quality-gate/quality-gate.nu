@@ -330,7 +330,12 @@ def quality-gate-path-excluded [candidate: path]: nothing -> bool {
 
 def quality-gate-files [extensions: list<string>]: nothing -> list<string> {
     let scope = project
-    let files = git-repository-files $scope
+    let tracked = git-repository-files $scope
+    let files = if ($tracked | is-empty) {
+        glob --no-dir ($'($scope)/**/*')
+    } else {
+        $tracked
+    }
     let excluded = git-excluded-relative ($files | each {|file| $file | path relative-to $scope })
     $files
     | where {|file|
@@ -388,8 +393,13 @@ def format-python [] {
     if not (python-project) { return }
     warn-local-quality-config ['ruff.toml' '.ruff.toml']
 
+    let files = quality-gate-files [py pyi]
+    if ($files | is-empty) {
+        log warning 'No Python source files remain after .quality-gate/exclude; skipping format.'
+        return
+    }
     let arguments = [format --check --config $env.QUALITY_GATE_RUFF_CONFIG]
-        ++ (quality-gate-files [py pyi])
+        ++ $files
     let result = capture ruff $arguments
     if $result.exit_code == 0 {
         print 'ruff format: all files are correctly formatted.'
@@ -398,8 +408,7 @@ def format-python [] {
 
     if ($result.stdout | is-not-empty) { print ($result.stdout | str trim) }
     if ($result.stderr | is-not-empty) { print -e ($result.stderr | str trim) }
-    let diff = capture ruff ([format --diff --config $env.QUALITY_GATE_RUFF_CONFIG]
-        ++ (quality-gate-files [py pyi]))
+    let diff = capture ruff ([format --diff --config $env.QUALITY_GATE_RUFF_CONFIG] ++ $files)
     if ($diff.stdout | is-not-empty) { print ($diff.stdout | str trim) }
     error make {msg: 'ruff format found formatting differences; run `qg format py`'}
 }
@@ -407,14 +416,22 @@ def format-python [] {
 def lint-python [] {
     if not (python-project) { return }
     warn-local-quality-config ['ruff.toml' '.ruff.toml']
+    let files = quality-gate-files [py pyi]
+    if ($files | is-empty) {
+        log warning 'No Python source files remain after .quality-gate/exclude; skipping lint.'
+        return
+    }
     run-check 'ruff check' ruff (
-        [check --config $env.QUALITY_GATE_RUFF_CONFIG]
-        ++ (quality-gate-files [py pyi])
+        [check --config $env.QUALITY_GATE_RUFF_CONFIG] ++ $files
     )
 }
 
 def lint-python-complexipy [] {
     if not (python-project) { return }
+    if (quality-gate-files [py pyi] | is-empty) {
+        log warning 'No Python source files remain after .quality-gate/exclude; skipping complexity.'
+        return
+    }
     run-check 'complexipy' complexipy [.]
 }
 
@@ -557,7 +574,12 @@ def go-project []: nothing -> bool {
 
 def format-go-gofumpt [] {
     if not (go-project) { return }
-    let result = capture gofumpt ([-l] ++ (quality-gate-files [go]))
+    let files = quality-gate-files [go]
+    if ($files | is-empty) {
+        log warning 'No Go source files remain after .quality-gate/exclude; skipping format.'
+        return
+    }
+    let result = capture gofumpt ([-l] ++ $files)
     if $result.exit_code != 0 {
         error make {msg: 'gofumpt could not inspect the project'}
     }
@@ -565,7 +587,7 @@ def format-go-gofumpt [] {
         print 'gofumpt: all files are correctly formatted.'
     } else {
         print ($result.stdout | str trim)
-        let diff = capture gofumpt ([-d] ++ (quality-gate-files [go]))
+        let diff = capture gofumpt ([-d] ++ $files)
         if ($diff.stdout | is-not-empty) { print ($diff.stdout | str trim) }
         error make {msg: 'gofumpt found unformatted files; run `gofumpt -w .`'}
     }
@@ -573,7 +595,12 @@ def format-go-gofumpt [] {
 
 def format-go-goimports [] {
     if not (go-project) { return }
-    let result = capture goimports ([-l] ++ (quality-gate-files [go]))
+    let files = quality-gate-files [go]
+    if ($files | is-empty) {
+        log warning 'No Go source files remain after .quality-gate/exclude; skipping imports format.'
+        return
+    }
+    let result = capture goimports ([-l] ++ $files)
     if $result.exit_code != 0 {
         error make {msg: 'goimports could not inspect the project'}
     }
@@ -581,7 +608,7 @@ def format-go-goimports [] {
         print 'goimports: all import blocks are correctly organised.'
     } else {
         print ($result.stdout | str trim)
-        let diff = capture goimports ([-d] ++ (quality-gate-files [go]))
+        let diff = capture goimports ([-d] ++ $files)
         if ($diff.stdout | is-not-empty) { print ($diff.stdout | str trim) }
         error make {msg: 'goimports found unorganised imports; run `goimports -w .`'}
     }
@@ -754,9 +781,13 @@ def typescript-react-project []: nothing -> bool {
 def format-typescript [] {
     if not (node-project) { return }
     warn-local-quality-config ['.oxfmtrc.json' '.oxfmtrc.jsonc' 'oxfmt.config.js' 'oxfmt.config.mjs' 'oxfmt.config.ts' 'oxfmt.config.mts']
+    let files = quality-gate-files [ts tsx mts cts vue]
+    if ($files | is-empty) {
+        log warning 'No TypeScript source files remain after .quality-gate/exclude; skipping format.'
+        return
+    }
     let result = capture oxfmt (
-        [--config $env.QUALITY_GATE_OXFMT_CONFIG --list-different]
-        ++ (quality-gate-files [ts tsx mts cts vue])
+        [--config $env.QUALITY_GATE_OXFMT_CONFIG --list-different] ++ $files
     )
     if $result.exit_code == 0 {
         print 'oxfmt: all files are correctly formatted.'
@@ -770,9 +801,14 @@ def format-typescript [] {
 def lint-typescript-oxlint [] {
     if not (node-project) { return }
     warn-local-quality-config ['.oxlintrc.json' '.oxlintrc.yaml' '.oxlintrc.yml' 'oxlint.config.js' 'oxlint.config.mjs' 'oxlint.config.ts']
+    let source_files = quality-gate-files [ts tsx mts cts vue]
+    if ($source_files | is-empty) {
+        log warning 'No TypeScript source files remain after .quality-gate/exclude; skipping lint.'
+        return
+    }
     let paths = (
         [--config $env.QUALITY_GATE_OXLINT_CONFIG]
-        ++ (quality-gate-files [ts tsx mts cts vue])
+        ++ $source_files
     )
     let framework = typescript-framework
     let arguments = if $framework == next {
@@ -1185,6 +1221,8 @@ def print-console-summary [title: string, scope: string, results: list<record>] 
     print $'Scope: ($scope)'
     print $'Revision: ($revision)'
     print $'Mode: (if (report-only) { "report-only" } else { "blocking" })'
+    let exclusions = quality-gate-exclude-patterns
+    print $'Exclusions: (if ($exclusions | is-empty) { "none" } else { $exclusions | str join ", " })'
     print ''
     print '| Project | Language | Check | Outcome |'
     print '| --- | --- | --- | --- |'
@@ -1247,6 +1285,7 @@ How to fix it:
         $'Scope: `($scope)`'
         $'Revision: `($revision)`'
         $'Mode: `($mode)`'
+        $'Exclusions: (if ((quality-gate-exclude-patterns) | is-empty) { "none" } else { (quality-gate-exclude-patterns | str join ", ") })'
         (if (report-only) { '> REPORT-ONLY: failures are reported but do not block this execution.' } else { '' })
         ''
         '| Project | Language | Check | Outcome |'
