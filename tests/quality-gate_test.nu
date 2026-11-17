@@ -432,6 +432,7 @@ def test-report-mode-reports-failures-without-blocking [] {
         let summary = $root | path join summary.md
         let report_until = ((date now) + 30day | format date '%Y-%m-%d')
         write-fixture-file $root go.mod "module example.com/fixture\n\ngo 1.23.0\n"
+        write-fixture-file $root .quality-gate/exclude "generated/\n"
         write-fake-tool $bin golangci-lint
         write-fake-tool $bin go
         let result = run-quality-gate-with-env $root {
@@ -443,7 +444,59 @@ def test-report-mode-reports-failures-without-blocking [] {
         } category lint
         assert equal $result.exit_code 0
         assert ((open --raw $summary) | str contains 'Mode: `report-only`')
+        assert ((open --raw $summary) | str contains 'Exclusions: generated/')
         assert ((open --raw $summary) | str contains 'REPORT-ONLY')
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
+def test-report-mode-requires-a-valid-deadline [] {
+    let root = make-fixture
+    try {
+        let bin = $root | path join bin
+        write-fixture-file $root go.mod "module example.com/fixture\n\ngo 1.23.0\n"
+        write-fake-tool $bin golangci-lint
+        write-fake-tool $bin go
+        for extra in [
+            {}
+            { QUALITY_GATE_REPORT_UNTIL: "not-a-date" }
+            { QUALITY_GATE_REPORT_UNTIL: "2000-01-01" }
+            { QUALITY_GATE_REPORT_UNTIL: "2099-01-01" }
+        ] {
+            let environment = {
+                PATH: ($env.PATH | prepend $bin)
+                QUALITY_GATE_FAKE_FAILURE: "false"
+                QUALITY_GATE_MODE: "report"
+            } | merge $extra
+            let result = run-quality-gate-with-env $root $environment category lint
+            assert ($result.exit_code != 0)
+        }
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
+def test-detection-warns-about-unsupported-python-managers [] {
+    let root = make-fixture
+    try {
+        write-fixture-file $root setup.py "from setuptools import setup\nsetup(name='legacy')\n"
+        let setup_result = run-quality-gate $root detect
+        assert equal $setup_result.exit_code 0
+        assert ($setup_result.stderr | str contains 'setup.py without pyproject.toml')
+
+        rm --recursive --force $root
+        let root = make-fixture
+        write-fixture-file $root pyproject.toml "[tool.poetry]\nname = 'legacy'\nversion = '0.1.0'\n"
+        let poetry_result = run-quality-gate $root detect
+        assert equal $poetry_result.exit_code 0
+        assert ($poetry_result.stderr | str contains 'declares Poetry')
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}

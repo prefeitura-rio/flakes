@@ -232,10 +232,11 @@ def warn-local-quality-config [files: list<string>] {
 }
 
 def quality-gate-exclude-patterns []: nothing -> list<string> {
-    if not ('.quality-gate/exclude' | path exists) {
+    let file = project | path join .quality-gate exclude
+    if not ($file | path exists) {
         return []
     }
-    open --raw .quality-gate/exclude
+    open --raw $file
     | lines
     | each {|line| $line | str trim }
     | where {|line| ($line | is-not-empty) and not ($line | str starts-with '#') }
