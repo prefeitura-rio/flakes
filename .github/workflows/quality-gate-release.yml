@@ -24,7 +24,7 @@ jobs:
       changed: ${{ steps.compare.outputs.changed }}
     steps:
       - name: Checkout target commit
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
@@ -84,7 +84,7 @@ jobs:
     with:
       release_branch: master
       target_sha: ${{ github.event.workflow_run.head_sha }}
-      initial_version: "2.0.0"
+      initial_version: "1.0.0"
       bump: minor
       floating_tag: quality-gate-latest
       tag_prefix: quality-gate-v
@@ -92,4 +92,4 @@ jobs:
       require_workflow_gate: true
       required_workflow: Quality Gate Tests
       git_author_name: CI Release Bot
-      git_author_email: ci-release@example.invalid
+      git_author_email: 41898282+github-actions[bot]@users.noreply.github.com

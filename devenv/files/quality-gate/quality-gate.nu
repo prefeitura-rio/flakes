@@ -97,6 +97,7 @@ def marker-files-from-glob [scope: path]: nothing -> list<path> {
 
 def project-directories []: nothing -> list<string> {
     let scope = (project)
+    validate-quality-gate-exclusions
     let marker_files = (marker-files-from-git $scope)
     let marker_files = if $marker_files == null {
         marker-files-from-glob $scope
@@ -170,7 +171,27 @@ def skip [language: string] {
 }
 
 def report-only []: nothing -> bool {
-    ($env.QUALITY_GATE_MODE? | default 'block') == 'report'
+    let mode = $env.QUALITY_GATE_MODE? | default 'block'
+    if $mode != 'report' {
+        return false
+    }
+    let until = $env.QUALITY_GATE_REPORT_UNTIL? | default ''
+    if ($until | is-empty) {
+        error make {msg: 'QUALITY_GATE_MODE=report requires QUALITY_GATE_REPORT_UNTIL (maximum 45 days).'}
+    }
+    let deadline = try {
+        $until | into datetime
+    } catch {
+        error make {msg: $'Invalid QUALITY_GATE_REPORT_UNTIL: ($until). Use YYYY-MM-DD.'}
+    }
+    let now = date now
+    if $deadline < $now {
+        error make {msg: $'Quality Gate report-only period expired on ($until). Remove QUALITY_GATE_MODE=report or set a future approved date.'}
+    }
+    if $deadline > ($now + 45day) {
+        error make {msg: 'QUALITY_GATE_REPORT_UNTIL cannot be more than 45 days in the future.'}
+    }
+    true
 }
 
 def capture [command: string, arguments: list<string>]: nothing -> record {
@@ -220,18 +241,104 @@ def quality-gate-exclude-patterns []: nothing -> list<string> {
     | where {|line| ($line | is-not-empty) and not ($line | str starts-with '#') }
 }
 
-def quality-gate-path-excluded [candidate: path]: nothing -> bool {
-    let relative = ($candidate | path relative-to (project))
-    let normalized = ($relative | str replace --all '\\' '/')
-    quality-gate-exclude-patterns
-    | any {|pattern|
-        let base = $pattern
-            | str trim
-            | str replace --all '/**' ''
-            | str replace --all '/**' ''
-            | str trim --char '/'
-        $normalized == $base or ($normalized | str starts-with $'($base)/')
+def git-repository-root [scope: path]: nothing -> oneof<path, nothing> {
+    let result = (do { ^git -C $scope rev-parse --show-toplevel } | complete)
+    if $result.exit_code == 0 {
+        $result.stdout | str trim | path expand
+    } else {
+        null
     }
+}
+
+def git-repository-files [scope: path]: nothing -> list<string> {
+    let root = (git-repository-root $scope)
+    if $root == null {
+        return []
+    }
+    let result = (do {
+        ^git -C $root ls-files --cached --others --exclude-standard
+    } | complete)
+    if $result.exit_code != 0 {
+        []
+    } else {
+        let scope_path = $scope | path expand
+        $result.stdout
+        | lines
+        | where {|file| ($file | str trim | is-not-empty) }
+        | each {|file| $root | path join $file | path expand }
+        | where {|file|
+            $file == $scope_path or ($file | str starts-with $'($scope_path)/')
+        }
+    }
+}
+
+def git-excluded-relative [paths: list<string>]: nothing -> list<string> {
+    let patterns = quality-gate-exclude-patterns
+    if ($patterns | is-empty) or ($paths | is-empty) {
+        return []
+    }
+    let temporary = (mktemp --directory | str trim)
+    try {
+        ^git init --quiet $temporary
+        let exclude = $temporary | path join .git info exclude
+        $patterns | str join (char nl) | save --force $exclude
+        let input = ($paths | str join (char nl)) + (char nl)
+        let result = ($input | ^git -C $temporary check-ignore --no-index --stdin | complete)
+        if $result.exit_code == 0 {
+            $result.stdout | lines | where {|path| ($path | str trim | is-not-empty) }
+        } else {
+            []
+        }
+    } finally {
+        rm --recursive --force $temporary
+    }
+}
+
+def validate-quality-gate-exclusions []: nothing -> nothing {
+    let patterns = quality-gate-exclude-patterns
+    let broad = $patterns | where {|pattern|
+        ($pattern | str trim) in ['' '*' '**' '**/*' '.' './' '/']
+    }
+    if ($broad | is-not-empty) {
+        error make {msg: $'Invalid .quality-gate/exclude pattern(s): (($broad | str join ", ")). Broad patterns cannot disable the Quality Gate.'}
+    }
+
+    let scope = project
+    let files = git-repository-files $scope
+    if ($files | is-empty) or ($patterns | is-empty) {
+        return
+    }
+    let code = $files | where {|file|
+        let extension = (($file | path parse).extension? | default '' | str lowercase)
+        $extension in [
+            py pyi go ts tsx mts cts js jsx vue
+        ]
+    }
+    let relative = $code | each {|file| $file | path relative-to $scope }
+    let excluded = git-excluded-relative $relative
+    if ($code | is-empty) { return }
+    let percentage = (($excluded | length) * 100 / ($code | length))
+    if $percentage > 30 {
+        error make {msg: $'.quality-gate/exclude excludes ($excluded | length) of ($code | length) code files (($percentage | math round)%). The maximum is 30%.'}
+    }
+}
+
+def quality-gate-path-excluded [candidate: path]: nothing -> bool {
+    let relative = $candidate | path relative-to (project)
+    (git-excluded-relative [$relative] | is-not-empty)
+}
+
+def quality-gate-files [extensions: list<string>]: nothing -> list<string> {
+    let scope = project
+    let files = git-repository-files $scope
+    let excluded = git-excluded-relative ($files | each {|file| $file | path relative-to $scope })
+    $files
+    | where {|file|
+        let extension = (($file | path parse).extension? | default '' | str lowercase)
+        $extension in $extensions
+    }
+    | each {|file| $file | path relative-to $scope }
+    | where {|file| $file not-in $excluded }
 }
 
 def exclusion-arguments [flag: string]: nothing -> list<string> {
@@ -269,13 +376,20 @@ def python-project []: nothing -> bool {
     }
 }
 
+def warn-unsupported-python-manager [directory: path] {
+    if ('setup.py' | path exists) and not ('pyproject.toml' | path exists) {
+        log warning $'Python project ($directory) uses setup.py without pyproject.toml; dependency-aware Quality Gate checks require uv.'
+    } else if ('pyproject.toml' | path exists) and ((open --raw pyproject.toml) | str contains '[tool.poetry]') {
+        log warning $'Python project ($directory) declares Poetry; dependency-aware Quality Gate checks support uv.lock only.'
+    }
+}
+
 def format-python [] {
     if not (python-project) { return }
     warn-local-quality-config ['ruff.toml' '.ruff.toml']
 
     let arguments = [format --check --config $env.QUALITY_GATE_RUFF_CONFIG]
-        ++ (exclusion-arguments '--extend-exclude')
-        ++ [.]
+        ++ (quality-gate-files [py pyi])
     let result = capture ruff $arguments
     if $result.exit_code == 0 {
         print 'ruff format: all files are correctly formatted.'
@@ -285,8 +399,7 @@ def format-python [] {
     if ($result.stdout | is-not-empty) { print ($result.stdout | str trim) }
     if ($result.stderr | is-not-empty) { print -e ($result.stderr | str trim) }
     let diff = capture ruff ([format --diff --config $env.QUALITY_GATE_RUFF_CONFIG]
-        ++ (exclusion-arguments '--extend-exclude')
-        ++ [.])
+        ++ (quality-gate-files [py pyi]))
     if ($diff.stdout | is-not-empty) { print ($diff.stdout | str trim) }
     error make {msg: 'ruff format found formatting differences; run `qg format py`'}
 }
@@ -296,8 +409,7 @@ def lint-python [] {
     warn-local-quality-config ['ruff.toml' '.ruff.toml']
     run-check 'ruff check' ruff (
         [check --config $env.QUALITY_GATE_RUFF_CONFIG]
-        ++ (exclusion-arguments '--extend-exclude')
-        ++ [.]
+        ++ (quality-gate-files [py pyi])
     )
 }
 
@@ -327,9 +439,13 @@ def lint-python-basedpyright [] {
 
 def python-quality-config []: nothing -> path {
     let central = open $env.QUALITY_GATE_PYRIGHT_CONFIG
-    let excludes = quality-gate-exclude-patterns
-        | each {|pattern| (project | path join $pattern | path expand) }
-    let config = mktemp --suffix .json | str trim
+    let scope = project
+    let files = git-repository-files $scope
+    let excludes = git-excluded-relative (
+        $files | each {|file| $file | path relative-to $scope }
+    ) | each {|file| $scope | path join $file | path expand }
+    let config = project | path join '.quality-gate-pyrightconfig.json'
+    rm --force $config
     $central
     | upsert exclude $excludes
     | to json
@@ -339,7 +455,11 @@ def python-quality-config []: nothing -> path {
 
 def ast-grep-config [rules: path, language: string]: nothing -> path {
     let config = (mktemp | str trim)
-    let ignores = quality-gate-exclude-patterns
+    let scope = project
+    let files = git-repository-files $scope
+    let ignores = git-excluded-relative (
+        $files | each {|file| $file | path relative-to $scope }
+    )
     let ignore_lines = if ($ignores | is-empty) {
         []
     } else {
@@ -437,7 +557,7 @@ def go-project []: nothing -> bool {
 
 def format-go-gofumpt [] {
     if not (go-project) { return }
-    let result = capture gofumpt [-l .]
+    let result = capture gofumpt ([-l] ++ (quality-gate-files [go]))
     if $result.exit_code != 0 {
         error make {msg: 'gofumpt could not inspect the project'}
     }
@@ -445,7 +565,7 @@ def format-go-gofumpt [] {
         print 'gofumpt: all files are correctly formatted.'
     } else {
         print ($result.stdout | str trim)
-        let diff = capture gofumpt [-d .]
+        let diff = capture gofumpt ([-d] ++ (quality-gate-files [go]))
         if ($diff.stdout | is-not-empty) { print ($diff.stdout | str trim) }
         error make {msg: 'gofumpt found unformatted files; run `gofumpt -w .`'}
     }
@@ -453,7 +573,7 @@ def format-go-gofumpt [] {
 
 def format-go-goimports [] {
     if not (go-project) { return }
-    let result = capture goimports [-l .]
+    let result = capture goimports ([-l] ++ (quality-gate-files [go]))
     if $result.exit_code != 0 {
         error make {msg: 'goimports could not inspect the project'}
     }
@@ -461,7 +581,7 @@ def format-go-goimports [] {
         print 'goimports: all import blocks are correctly organised.'
     } else {
         print ($result.stdout | str trim)
-        let diff = capture goimports [-d .]
+        let diff = capture goimports ([-d] ++ (quality-gate-files [go]))
         if ($diff.stdout | is-not-empty) { print ($diff.stdout | str trim) }
         error make {msg: 'goimports found unorganised imports; run `goimports -w .`'}
     }
@@ -480,8 +600,11 @@ def lint-go-golangci [] {
 
 def go-quality-config []: nothing -> path {
     let central = open $env.QUALITY_GATE_GO_CONFIG
-    let paths = quality-gate-exclude-patterns
-        | each {|pattern| $pattern | str replace --all '*' '.*' }
+    let scope = project
+    let files = git-repository-files $scope
+    let paths = git-excluded-relative (
+        $files | each {|file| $file | path relative-to $scope }
+    ) | each {|path| $path | str replace --all '.' '\.' }
     let exclusions = $central.linters.exclusions | upsert paths (
         (($central.linters.exclusions.paths? | default []) ++ $paths) | uniq
     )
@@ -495,12 +618,40 @@ def go-quality-config []: nothing -> path {
 
 def lint-go-vet [] {
     if not (go-project) { return }
-    run-check 'go vet' go [vet ./...]
+    let packages = go-packages
+    if ($packages | is-empty) {
+        log warning 'All Go packages are excluded by .quality-gate/exclude; skipping go vet.'
+        return
+    }
+    run-check 'go vet' go ([vet] ++ $packages)
 }
 
 def typecheck-go [] {
     if not (go-project) { return }
-    run-check 'go build' go [build -o /dev/null ./...]
+    let packages = go-packages
+    if ($packages | is-empty) {
+        log warning 'All Go packages are excluded by .quality-gate/exclude; skipping go build.'
+        return
+    }
+    run-check 'go build' go ([build -o /dev/null] ++ $packages)
+}
+
+def go-packages []: nothing -> list<string> {
+    if (quality-gate-exclude-patterns | is-empty) {
+        return ['./...']
+    }
+    let result = capture go [list -f '{{.ImportPath}}\t{{.Dir}}' ./...]
+    if $result.exit_code != 0 {
+        error make {msg: 'go list could not inspect the project'}
+    }
+    $result.stdout
+    | lines
+    | each {|line|
+        let parts = $line | split row (char tab)
+        { package: ($parts | get 0), directory: ($parts | get 1) }
+    }
+    | where {|row| not (quality-gate-path-excluded $row.directory) }
+    | get package
 }
 
 def node-manager []: nothing -> string {
@@ -604,9 +755,8 @@ def format-typescript [] {
     if not (node-project) { return }
     warn-local-quality-config ['.oxfmtrc.json' '.oxfmtrc.jsonc' 'oxfmt.config.js' 'oxfmt.config.mjs' 'oxfmt.config.ts' 'oxfmt.config.mts']
     let result = capture oxfmt (
-        [--config $env.QUALITY_GATE_OXFMT_CONFIG]
-        ++ (exclusion-arguments '--ignore-pattern')
-        ++ [--list-different .]
+        [--config $env.QUALITY_GATE_OXFMT_CONFIG --list-different]
+        ++ (quality-gate-files [ts tsx mts cts vue])
     )
     if $result.exit_code == 0 {
         print 'oxfmt: all files are correctly formatted.'
@@ -622,8 +772,7 @@ def lint-typescript-oxlint [] {
     warn-local-quality-config ['.oxlintrc.json' '.oxlintrc.yaml' '.oxlintrc.yml' 'oxlint.config.js' 'oxlint.config.mjs' 'oxlint.config.ts']
     let paths = (
         [--config $env.QUALITY_GATE_OXLINT_CONFIG]
-        ++ (exclusion-arguments '--ignore-pattern')
-        ++ [.]
+        ++ (quality-gate-files [ts tsx mts cts vue])
     )
     let framework = typescript-framework
     let arguments = if $framework == next {
@@ -725,7 +874,7 @@ def typescript-quality-configs []: nothing -> list<path> {
         # Keep the generated config beside the original project config. TypeScript
         # resolves relative compiler options (for example baseUrl, paths and
         # typeRoots) relative to the config file, not relative to the cwd.
-        let config = (mktemp --tmpdir-path $source.base --suffix .json | str trim)
+        let config = (mktemp --tmpdir-path $source.base '.quality-gate-tsconfig.XXXXXX.json' | str trim)
         {
             compilerOptions: $options
             files: $files
@@ -1204,6 +1353,11 @@ def detect [] {
         let relative = ($directory | path relative-to $scope)
         let display = if ($relative | is-empty) or $relative == '.' { '.' } else { $relative }
         log info $'Detected project ($display): ((project-languages $directory) | str join ", ")'
+        if python in (project-languages $directory) {
+            cd $directory
+            warn-unsupported-python-manager $display
+            cd $scope
+        }
     }
 
     let detection_file = ($env.QUALITY_GATE_DETECTION_FILE? | default null)

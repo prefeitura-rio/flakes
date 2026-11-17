@@ -249,6 +249,34 @@ def test-central-exclude-removes-a-project-from-the-gate [] {
 }
 
 @test
+def test-central-exclude-uses-git-glob-semantics [] {
+    let root = make-fixture
+    try {
+        ^git -C $root init --quiet
+        for path in ['gen/client' 'gen/other' 'apps/client'] {
+            write-fixture-file $root ($'($path)/go.mod') "module example.com/fixture\n\ngo 1.23.0\n"
+        }
+        let cases = [
+            {pattern: 'gen/client', expected: ['gen/other' 'apps/client']}
+            {pattern: '**/client', expected: ['gen/other']}
+            {pattern: 'gen/*', expected: ['apps/client']}
+        ]
+        for case in $cases {
+            write-fixture-file $root .quality-gate/exclude $case.pattern
+            let result = run-quality-gate $root detect
+            assert equal $result.exit_code 0
+            for directory in $case.expected {
+                assert ($result.stderr | str contains $'Detected project ($directory): go')
+            }
+        }
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
 def test-fix-continues-after-a-nonfixable-ruff-failure [] {
     let root = make-fixture
     try {
@@ -397,10 +425,11 @@ def test-failing-check-escapes-junit-diagnostics [] {
 
 @test
 def test-report-mode-reports-failures-without-blocking [] {
-    let root = make-fixture
+        let root = make-fixture
     try {
         let bin = $root | path join bin
         let summary = $root | path join summary.md
+        let report_until = ((date now) + 30day | format date '%Y-%m-%d')
         write-fixture-file $root go.mod "module example.com/fixture\n\ngo 1.23.0\n"
         write-fake-tool $bin golangci-lint
         write-fake-tool $bin go
@@ -408,6 +437,7 @@ def test-report-mode-reports-failures-without-blocking [] {
             PATH: ($env.PATH | prepend $bin)
             QUALITY_GATE_FAKE_FAILURE: "true"
             QUALITY_GATE_MODE: "report"
+            QUALITY_GATE_REPORT_UNTIL: $report_until
             QUALITY_GATE_SUMMARY_FILE: $summary
         } category lint
         assert equal $result.exit_code 0
@@ -547,16 +577,20 @@ def test-curated-policy-snapshot-is-current [] {
     let pyright = open ($QUALITY_GATE_FILES | path join python pyrightconfig.json)
     let golangci = open ($QUALITY_GATE_FILES | path join go .golangci.yml)
     let oxlint = open ($QUALITY_GATE_FILES | path join typescript .oxlintrc.json)
+    let typescript = open ($QUALITY_GATE_FILES | path join typescript tsconfig.quality-gate.json)
     let actual = {
         python: {
             ruff_select: $ruff.lint.select
-            ruff_ignore: $ruff.lint.ignore
+            ruff_ignore: ($ruff.lint.ignore? | default [])
             basedpyright_mode: $pyright.typeCheckingMode
         }
         go: {
             linters_enable: $golangci.linters.enable
+            gocritic_settings_sha256: ($golangci.linters.settings.gocritic | to json | hash sha256 | str trim)
+            staticcheck_settings_sha256: ($golangci.linters.settings.staticcheck | to json | hash sha256 | str trim)
         }
         typescript: {
+            skip_lib_check: $typescript.compilerOptions.skipLibCheck
             rules: $oxlint.rules
         }
     }
@@ -658,6 +692,32 @@ def test-python-typecheck-resolves-venv-dependencies [] {
         let result = run-quality-gate-app $root quality-gate-python category typecheck
         assert equal $result.exit_code 0
         assert ($result.stdout | str contains 'Summary: all')
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
+def test-python-typecheck-resolves-first-party-imports [] {
+    let root = make-fixture
+    try {
+        write-fixture-file $root pyproject.toml "[project]\nname = 'fixture-app'\nversion = '0.1.0'\nrequires-python = '>=3.13'\n\n[tool.uv]\npackage = false\n"
+        write-fixture-file $root app/__init__.py ''
+        write-fixture-file $root app/models.py "class User:\n    name: str = ''\n"
+        write-fixture-file $root app/api/__init__.py ''
+        write-fixture-file $root app/api/routes.py "from app.models import User\n\n\ndef get_user() -> User:\n    return User()\n"
+        ^git -C $root init --quiet
+        let lock = with-env {} {
+            cd $root
+            ^uv lock | complete
+        }
+        assert equal $lock.exit_code 0
+        let result = run-quality-gate-app $root quality-gate-python category typecheck
+        assert equal $result.exit_code 0
+        assert ($result.stdout | str contains 'Summary: all')
+        assert not (($root | path join .quality-gate-pyrightconfig.json) | path exists)
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}

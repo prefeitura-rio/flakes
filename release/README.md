@@ -22,6 +22,10 @@ atomically publish immutable version tag and quality-gate-latest
 The immutable tag is the audit trail. Consumers use `quality-gate-latest`, which
 is moved only by this workflow after the gate passes.
 
+The new flakes-based motor starts at `quality-gate-v1.0.0`; the previous
+`quality-gate-v1.x` tags belonged to the frozen implementation in
+`prefeitura-rio/actions` and are not reused by this repository.
+
 The release workflow compares the four Quality Gate app derivations
 (`quality-gate`, `-python`, `-go` and `-typescript`) across the supported
 systems with the last `quality-gate-v*` tag. Changes to unrelated flakes

@@ -253,11 +253,17 @@ TypeScript handling is framework aware:
 - Typecheck is always invoked by the central runner (`tsc` or `vue-tsc`) with
   the mandatory Quality Gate compiler options. Nuxt projects run `nuxt prepare`
   first. A consumer's `scripts.typecheck` is not used for this global check.
+- Generated solution-reference configs use the `.quality-gate-tsconfig.*.json`
+  name beside the source config and are removed after the check; consumers
+  should ignore that pattern.
 - Typecheck and tests need a committed lockfile, `package-lock.json` for npm or `pnpm-lock.yaml` for pnpm. A pnpm lockfile also needs `packageManager: pnpm@<version>` in `package.json`.
 - Typecheck needs a `.node-version` file, or `QUALITY_GATE_NODE_VERSION`.
 - `quality-gate:tests` requires `scripts.test` in `package.json` for TypeScript projects.
 
 Python projects with a `pyproject.toml` are synchronized with `uv sync --frozen --all-groups`, so they need a compatible `uv.lock`.
+The temporary basedpyright configuration is created as
+`.quality-gate-pyrightconfig.json` beside the project config and removed after
+the check; consumers should ignore that exact filename in `.gitignore`.
 
 ### Configuration precedence
 
@@ -304,15 +310,20 @@ Every category prints a Markdown table to the terminal with one row per project,
 | `QUALITY_GATE_DETECTION_FILE`   | detected languages and project count, as `KEY=value` lines |
 | `QUALITY_GATE_PROJECT_DIR`      | directory to scan                                 |
 | `QUALITY_GATE_NODE_VERSION`     | Node.js version when there is no `.node-version`  |
+| `QUALITY_GATE_REF`              | release tag or SHA resolved by the local hook     |
+| `QUALITY_GATE_MODE`             | `block` (default) or time-limited `report`       |
+| `QUALITY_GATE_REPORT_UNTIL`     | required deadline for report-only mode           |
 
 The tools, including `complexipy` and Oxlint, are pinned by this repository, so a project's `devenv.lock` fixes the versions of both the tools and the rules.
 
 ### Report-only rollout
 
 The default mode is blocking. A consumer may temporarily set
-`QUALITY_GATE_MODE=report` while adopting the curated policy. All checks and
-reports still run, but failures are marked `REPORT-ONLY` and do not fail the
-job or hook. Removing the variable returns the consumer to blocking mode.
+`QUALITY_GATE_MODE=report` while adopting the curated policy, but must also set
+`QUALITY_GATE_REPORT_UNTIL=YYYY-MM-DD`. The deadline cannot be more than 45 days
+ahead and an expired/missing deadline blocks the execution. All checks and
+reports still run, but failures are marked `REPORT-ONLY` during the valid
+window. Removing the variable returns the consumer to blocking mode.
 
 ## Development
 

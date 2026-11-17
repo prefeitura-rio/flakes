@@ -17,10 +17,9 @@
       "B905",
       "C901",
       "E402",
-      "E501",
+      "E9",
       "E722",
-      "F401",
-      "F821",
+      "F",
       "FBT001",
       "FBT002",
       "FBT003",
@@ -34,7 +33,6 @@
       "RET505",
       "RUF100",
       "RUF102",
-      "S101",
       "S102",
       "S105",
       "S106",
@@ -53,7 +51,7 @@
       "W291",
       "W293"
     ],
-    "ruff_ignore": ["S101"],
+    "ruff_ignore": [],
     "basedpyright_mode": "recommended"
   },
   "go": {
@@ -73,9 +71,12 @@
       "misspell",
       "whitespace",
       "gosec"
-    ]
+    ],
+    "gocritic_settings_sha256": "e966bf145c1a5bd4e3ae8c127cd7bcd27f395a6108559aef1a2bcc25955bfddd",
+    "staticcheck_settings_sha256": "db9c59c10cbe13871e6dfac77b9988eca4629113b9fd2daf3bc378cbb842810f"
   },
   "typescript": {
+    "skip_lib_check": true,
     "rules": {
       "no-debugger": "error",
       "eqeqeq": ["error", "always"],

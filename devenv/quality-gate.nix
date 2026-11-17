@@ -13,10 +13,10 @@ let
     sed_bin="${pkgs.gnused}/bin/sed"
     date_bin="${pkgs.coreutils}/bin/date"
     quality_gate_repo="https://github.com/prefeitura-rio/flakes.git"
-    quality_gate_ref="quality-gate-latest"
+    quality_gate_ref="''${QUALITY_GATE_REF:-quality-gate-latest}"
     quality_gate_run_ref="''${QUALITY_GATE_RUN_REF:-}"
     git_dir="$("$git_bin" rev-parse --git-dir)"
-    cache_file="$git_dir/quality-gate-latest"
+    cache_file="$git_dir/quality-gate-resolved"
     quality_gate_sha="''${QUALITY_GATE_RESOLVED_SHA:-}"
 
     if [ -n "$quality_gate_run_ref" ]; then
@@ -29,22 +29,27 @@ let
           quality_gate_sha="$("$git_bin" ls-remote "$quality_gate_repo" "refs/tags/$quality_gate_ref" | "$awk_bin" 'NR == 1 { print $1 }')"
         fi
         if [ -n "$quality_gate_sha" ]; then
-          printf '%s\n%s\n' "$quality_gate_sha" "$("$date_bin" +%s)" > "$cache_file"
+          printf '%s\n%s\n%s\n' "$quality_gate_sha" "$("$date_bin" +%s)" "$quality_gate_ref" > "$cache_file"
         fi
       fi
 
       if [ -z "$quality_gate_sha" ]; then
         if [ ! -s "$cache_file" ]; then
-          echo "Quality Gate could not resolve quality-gate-latest and has no cached revision." >&2
-          exit 1
+          echo "Quality Gate could not resolve $quality_gate_ref and has no cached revision." >&2
+          exit 3
         fi
         quality_gate_sha="$("$sed_bin" -n '1p' "$cache_file")"
         cached_at="$("$sed_bin" -n '2p' "$cache_file")"
+        cached_ref="$("$sed_bin" -n '3p' "$cache_file")"
+        if [ -n "$cached_ref" ] && [ "$cached_ref" != "$quality_gate_ref" ]; then
+          echo "Quality Gate cache belongs to $cached_ref, not $quality_gate_ref; connect to the network." >&2
+          exit 3
+        fi
         now="$("$date_bin" +%s)"
         age="$((now - cached_at))"
         if [ "$age" -gt 1209600 ]; then
           echo "Quality Gate cache is older than 14 days; connect to the network before committing." >&2
-          exit 1
+          exit 3
         fi
         echo "WARNING: Quality Gate is offline; using cached revision $quality_gate_sha." >&2
       fi

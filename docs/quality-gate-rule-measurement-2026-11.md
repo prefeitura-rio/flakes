@@ -11,7 +11,7 @@ changes the gate. The source repositories and sandboxes were not modified.
 | Language | Samples |
 |---|---|
 | Python | `python-battlegrounds`, `mcp-triagem-smtr`, `infopref-chat-api`, `data-proxy/sync` |
-| Go | `go-battlegrounds`, `go-projects-template/api` |
+| Go | `go-battlegrounds`, `go-projects-template/api`, `app-rmi` (real service copy) |
 | TypeScript | `typescript-battlegrounds`, `vue-battlegrounds`, `dashboard-whatsapp` |
 
 ## Findings by rule
@@ -51,6 +51,13 @@ The Go sandbox produced five findings:
 `forbidigo` remains in the curated policy. `paralleltest` and `nlreturn` are
 not part of the central mandatory list.
 
+The real `app-rmi` copy produced 427 findings. The largest groups were
+`errorlint` (113), `gocritic` (89), `errcheck` (54), `misspell` (53),
+`gocyclo` (38), `unparam` (33), `staticcheck` (11), `forbidigo` (11),
+`whitespace` (9), `gosec` (2) and `unconvert` (1). This confirms that the
+curated list is materially more actionable than the former `default: all`
+policy, while retaining the most relevant groups.
+
 ### TypeScript
 
 | Sample | Main findings |
@@ -62,6 +69,12 @@ not part of the central mandatory list.
 The curated Oxlint policy keeps the explicit central correctness, React Hooks
 and accessibility rules. Broad categories are not enabled, so a tool upgrade
 cannot silently add new blocking rules.
+
+For typecheck, the first pass with central `skipLibCheck: false` produced
+third-party declaration failures in `vue-battlegrounds` (`@vitest`, Vue Test
+Utils, Rollup and missing Node declarations). The central policy now uses
+`skipLibCheck: true`; project source files remain typechecked while broken
+external `.d.ts` files do not block the consumer.
 
 ## Policy guard
 

@@ -5,7 +5,7 @@
     "noImplicitAny": true,
     "noImplicitThis": true,
     "noEmit": true,
-    "skipLibCheck": false,
+    "skipLibCheck": true,
     "strict": true,
     "strictBindCallApply": true,
     "strictFunctionTypes": true,
