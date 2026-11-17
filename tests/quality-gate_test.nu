@@ -543,8 +543,36 @@ def test-python-app-runs-real-lint-checks [] {
         } lint python basedpyright
         assert equal $basedpyright.exit_code 0
         let command = open --raw $log
-        assert ($command | str contains $'--venvpath ($root)')
         assert ($command | str contains $'--pythonpath (($root | path join .venv bin python))')
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
+def test-python-typecheck-resolves-venv-dependencies [] {
+    let root = make-fixture
+    try {
+        write-fixture-file $root pyproject.toml "[project]\nname = 'fixture-app'\nversion = '0.1.0'\nrequires-python = '>=3.13'\ndependencies = ['fixture-lib']\n\n[tool.uv.sources]\nfixture-lib = { path = 'fixture-lib' }\n"
+        write-fixture-file $root fixture-lib/pyproject.toml "[project]\nname = 'fixture-lib'\nversion = '0.1.0'\nrequires-python = '>=3.13'\n\n[build-system]\nrequires = ['hatchling']\nbuild-backend = 'hatchling.build'\n"
+        write-fixture-file $root fixture-lib/src/fixture_lib/__init__.py "VALUE: str = 'from the fixture dependency'\n"
+        write-fixture-file $root fixture-lib/src/fixture_lib/py.typed ''
+        write-fixture-file $root app.py "from fixture_lib import VALUE\n\nresult: str = VALUE\n"
+        write-fixture-file $root .gitignore "fixture-lib/\n"
+        ^git -C $root init --quiet
+        ^git -C $root add pyproject.toml app.py .gitignore
+
+        let lock = with-env {} {
+            cd $root
+            ^uv lock | complete
+        }
+        assert equal $lock.exit_code 0
+
+        let result = run-quality-gate-app $root quality-gate-python category typecheck
+        assert equal $result.exit_code 0
+        assert ($result.stdout | str contains 'Summary: all')
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -621,6 +649,11 @@ def test-typescript-solution-references-preserve-project-options [] {
             '    if ($joined | str contains "--noEmit") {'
             '        let index = ($args | enumerate | where item == "--project" | get index | first)'
             '        let config = open ($args | get ($index + 1))'
+            $'        let expected_root = "($root | path expand)"'
+            '        if (($args | get ($index + 1) | path dirname | path expand) != $expected_root) {'
+            '            print "generated TypeScript config must stay beside the project config"'
+            '            exit 1'
+            '        }'
             '        if ($config.compilerOptions.jsx? | default null) != "react-jsx" {'
             '            print "solution compiler options were not preserved"'
             '            exit 1'

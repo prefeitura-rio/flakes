@@ -268,7 +268,7 @@ def lint-python-basedpyright [] {
     if not (python-project) { return }
     sync-python
     warn-local-quality-config ['pyrightconfig.json']
-    let arguments = [--project $env.QUALITY_GATE_PYRIGHT_CONFIG --venvpath (project)]
+    let arguments = [--project $env.QUALITY_GATE_PYRIGHT_CONFIG]
     let python = (project | path join .venv bin python)
     let arguments = if ($python | path exists) {
         $arguments ++ [--pythonpath $python]
@@ -626,7 +626,10 @@ def typescript-quality-configs []: nothing -> list<path> {
         } else {
             []
         }
-        let config = (mktemp --suffix .json | str trim)
+        # Keep the generated config beside the original project config. TypeScript
+        # resolves relative compiler options (for example baseUrl, paths and
+        # typeRoots) relative to the config file, not relative to the cwd.
+        let config = (mktemp --tmpdir-path $source.base --suffix .json | str trim)
         {
             compilerOptions: $options
             files: $files
