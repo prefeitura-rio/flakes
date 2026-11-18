@@ -271,6 +271,38 @@ def test-typecheck-requires-the-project-compiler [] {
     finish $root $outcome
 }
 
+@test
+def test-vue-projects-are-checked-with-vue-tsc-and-others-with-tsc [] {
+    let cases = [
+        {vue: true, expected: 'vue-tsc', other: 'tsc'}
+        {vue: false, expected: 'tsc', other: 'vue-tsc'}
+    ]
+    for case in $cases {
+        let root = fixture-repo ts-clean
+        let outcome = try {
+            if $case.vue {
+                write-file $root src/App.vue "<template><div /></template>\n"
+                commit-all $root
+            }
+            let bin = $root | path join fakebin
+            let log = $root | path join compilers.log
+            write-node-runtime $bin 24
+            write-exit-tool $bin npm 0
+            write-executable ($bin | path join tsc) "#!/bin/sh\nprintf '{\\"compilerOptions\\":{},\\"files\\":[\\"./src/app.ts\\"]}\\n'\n"
+            for name in [tsc vue-tsc] {
+                write-executable ($root | path join node_modules .bin $name) $"#!/bin/sh\necho '($name)' >> '($log)'\n"
+            }
+            let result = run-script $root {PATH: ($env.PATH | prepend $bin)} category typecheck
+            assert equal $result.exit_code 0 $'($result.stdout)\n($result.stderr)'
+            assert equal (open --raw $log | lines | uniq) [$case.expected] $'vue=($case.vue)'
+            null
+        } catch {|error|
+            $error.msg
+        }
+        finish $root $outcome
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Exit-code contract: which tool exit codes are findings and which are engine
 # failures. The corpus proves the real tools; this table proves the boundary.
@@ -422,7 +454,8 @@ def test-terminal-escape-sequences-never-reach-the-reports [] {
         let raw = open --raw $result.junit
         assert not ($raw | str contains (char --integer 27)) 'the JUnit report must not contain ESC'
         assert not ($raw | str contains (char --integer 1)) 'the JUnit report must not contain control characters'
-        assert ($raw | str contains 'print found')
+        assert ($raw | str contains 'T201 print found') 'the diagnostic text must survive the sanitizing'
+        assert not ($raw | str contains 'example.invalid') 'hyperlink targets (OSC 8) must be removed, not just their ESC bytes'
         null
     } catch {|error|
         $error.msg
