@@ -174,7 +174,7 @@ def require-local-tests [language: string] {
     }
 
     if (local-test-files $patterns | is-empty) {
-        error make {msg: 'No local tests were found'}
+        error make {msg: 'finding: No local tests were found'}
     }
 }
 
@@ -449,7 +449,7 @@ def format-python [] {
     if ($result.stderr | is-not-empty) { print -e ($result.stderr | str trim) }
     let diff = capture ruff ([format --diff --config $env.QUALITY_GATE_RUFF_CONFIG] ++ $files)
     if ($diff.stdout | is-not-empty) { print ($diff.stdout | str trim) }
-    error make {msg: 'ruff format found formatting differences; run `qg format py`'}
+    error make {msg: 'finding: ruff format found formatting differences; run `qg format py`'}
 }
 
 def lint-python [] {
@@ -658,7 +658,7 @@ def format-go-gofumpt [] {
         print ($result.stdout | str trim)
         let diff = capture gofumpt ([-d] ++ $files)
         if ($diff.stdout | is-not-empty) { print ($diff.stdout | str trim) }
-        error make {msg: 'gofumpt found unformatted files; run `gofumpt -w .`'}
+        error make {msg: 'finding: gofumpt found unformatted files; run `gofumpt -w .`'}
     }
 }
 
@@ -679,7 +679,7 @@ def format-go-goimports [] {
         print ($result.stdout | str trim)
         let diff = capture goimports ([-d] ++ $files)
         if ($diff.stdout | is-not-empty) { print ($diff.stdout | str trim) }
-        error make {msg: 'goimports found unorganised imports; run `goimports -w .`'}
+        error make {msg: 'finding: goimports found unorganised imports; run `goimports -w .`'}
     }
 }
 
@@ -879,7 +879,7 @@ def format-typescript [] {
     } else {
         if ($result.stdout | is-not-empty) { print ($result.stdout | str trim) }
         if ($result.stderr | is-not-empty) { print -e ($result.stderr | str trim) }
-        error make {msg: 'oxfmt found formatting differences; run `qg format ts`'}
+        error make {msg: 'finding: oxfmt found formatting differences; run `qg format ts`'}
     }
 }
 

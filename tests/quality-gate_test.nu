@@ -75,6 +75,16 @@ def write-fake-tool [bin: path, name: string] {
     ] | str join (char nl))
 }
 
+def write-fake-node [bin: path, major: int] {
+    write-executable ($bin | path join node) $'#!/bin/sh
+printf "v($major).0.0\n"'
+}
+
+def write-fake-format-list-tool [bin: path, name: string] {
+    write-executable ($bin | path join $name) '#!/bin/sh
+printf "main.go\n"'
+}
+
 def write-ast-grep-config [root: path, language: string]: nothing -> path {
     let rules = $QUALITY_GATE_FILES | path join $language rules
     let config = $root | path join 'sgconfig.yaml'
@@ -327,10 +337,14 @@ def test-fix-continues-after-a-nonfixable-ruff-failure [] {
 def test-typescript-typecheck-requires-a-lockfile [] {
     let root = make-fixture
     try {
+        let bin = $root | path join bin
         write-fixture-file $root package.json "{\n  \"name\": \"fixture\",\n  \"private\": true\n}\n"
         write-fixture-file $root tsconfig.json "{\n  \"compilerOptions\": {\n    \"strict\": true\n  }\n}\n"
         write-fixture-file $root .node-version "26\n"
-        let result = run-quality-gate $root typecheck typescript
+        write-fake-node $bin 26
+        let result = run-quality-gate-with-env $root {
+            PATH: ($env.PATH | prepend $bin)
+        } typecheck typescript
         assert ($result.exit_code != 0)
         assert (($result.stdout + $result.stderr) | str contains 'No lockfile found')
     } catch {|error|
@@ -373,6 +387,7 @@ def test-pnpm-typecheck-requires-a-versioned-package-manager [] {
         write-fixture-file $root package.json "{\n  \"name\": \"fixture\",\n  \"private\": true,\n  \"packageManager\": \"pnpm@9.1.0\"\n}\n"
         write-fake-tool $bin pnpm
         write-executable ($bin | path join tsc) "#!/usr/bin/env nu\nprint '{\"compilerOptions\":{},\"files\":[]}'\n"
+        write-fake-node $bin 26
         let valid = run-quality-gate-with-env $root {
             PATH: ($env.PATH | prepend $bin)
             QUALITY_GATE_FAKE_LOG: $log
@@ -417,6 +432,56 @@ def test-format-category-writes-summary-and-junit [] {
         error make {msg: $error.msg}
     }
     rm --recursive --force $root
+}
+
+@test
+def test-format-findings-are-categorized-as-findings [] {
+    let fixtures = [
+        { language: python, tool: ruff, extension: py, manifest: "pyproject.toml", source: "app.py" }
+        { language: go, tool: gofumpt, extension: go, manifest: "go.mod", source: "main.go" }
+        { language: typescript, tool: oxfmt, extension: ts, manifest: "package.json", source: "src/app.ts" }
+    ]
+    for fixture in $fixtures {
+        let root = make-fixture
+        try {
+            let bin = $root | path join bin
+            let manifest = if $fixture.language == python {
+                "[project]\nname = 'fixture'\nversion = '0.1.0'\n"
+            } else if $fixture.language == go {
+                "module example.com/fixture\n\ngo 1.23.0\n"
+            } else {
+                '{"name":"fixture","private":true}'
+            }
+            write-fixture-file $root $fixture.manifest $manifest
+            if $fixture.language == typescript {
+                write-fixture-file $root tsconfig.json '{}'
+            }
+            write-fixture-file $root $fixture.source "value = 1\n"
+            if $fixture.language == go {
+                write-fake-format-list-tool $bin gofumpt
+                write-fake-format-list-tool $bin goimports
+            } else {
+                write-fake-tool $bin $fixture.tool
+            }
+            let result = if $fixture.language == go {
+                run-quality-gate-with-env $root {
+                    PATH: ($env.PATH | prepend $bin)
+                } category format
+            } else {
+                run-quality-gate-with-env $root {
+                    PATH: ($env.PATH | prepend $bin)
+                    QUALITY_GATE_FAKE_FAILURE: "true"
+                } category format
+            }
+            assert ($result.exit_code != 0)
+            let output = $result.stdout + $result.stderr
+            assert ($output | str contains 'Category: `finding`')
+        } catch {|error|
+            rm --recursive --force $root
+            error make {msg: $'($fixture.language): ($error | to text)'}
+        }
+        rm --recursive --force $root
+    }
 }
 
 @test
@@ -931,6 +996,7 @@ def test-typescript-solution-references-preserve-project-options [] {
             '    }'
             '}'
         ] | str join (char nl))
+        write-fake-node $bin 26
         write-executable ($bin | path join npm) ([
             '#!/usr/bin/env nu'
             'def --wrapped main [...args: string] {'
