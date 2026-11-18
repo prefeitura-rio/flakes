@@ -26,6 +26,10 @@ def quality-gate-environment [root: path]: nothing -> record {
         QUALITY_GATE_OXLINT_CONFIG: ($QUALITY_GATE_FILES | path join typescript .oxlintrc.json)
         QUALITY_GATE_OXFMT_CONFIG: ($QUALITY_GATE_FILES | path join typescript .oxfmtrc.json)
         QUALITY_GATE_REPORT_POLICY: ($QUALITY_GATE_FILES | path join policy report-only.yaml)
+        CI: ''
+        QUALITY_GATE_CI: ''
+        CI_PROJECT_PATH: ''
+        QUALITY_GATE_REPORT_PROJECT: ''
     }
 }
 
@@ -389,13 +393,16 @@ def test-pnpm-typecheck-requires-a-versioned-package-manager [] {
 
         write-fixture-file $root package.json "{\n  \"name\": \"fixture\",\n  \"private\": true,\n  \"packageManager\": \"pnpm@9.1.0\"\n}\n"
         write-fake-tool $bin pnpm
+        write-fake-tool ($root | path join node_modules .bin) tsc
         write-executable ($bin | path join tsc) "#!/usr/bin/env nu\nprint '{\"compilerOptions\":{},\"files\":[]}'\n"
         let valid = run-quality-gate-with-env $root {
             PATH: ($env.PATH | prepend $bin)
             QUALITY_GATE_FAKE_LOG: $log
         } typecheck typescript
         assert equal $valid.exit_code 0
-        assert ((open --raw $log) | str contains 'install --frozen-lockfile')
+        let calls = open --raw $log | lines
+        assert ($calls | any {|line| $line | str contains 'install --frozen-lockfile' })
+        assert ($calls | any {|line| $line | str starts-with '--noEmit --project' })
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -604,12 +611,21 @@ def test-report-mode-requires-central-ci-allowlist [] {
         write-fixture-file $root go.mod "module example.com/fixture\n\ngo 1.23.0\n"
         let report_until = ((date now) + 30day | format date '%Y-%m-%d')
         let result = run-quality-gate-with-env $root {
-            CI_PROJECT_PATH: "iplanrio/not-approved"
+            QUALITY_GATE_CI: "true"
+            QUALITY_GATE_REPORT_PROJECT: "iplanrio/not-approved"
             QUALITY_GATE_MODE: "report"
             QUALITY_GATE_REPORT_UNTIL: $report_until
         } category lint
         assert ($result.exit_code != 0)
         assert (($result.stdout + $result.stderr) | str contains 'not approved for report-only')
+
+        let without_project = run-quality-gate-with-env $root {
+            CI: "true"
+            QUALITY_GATE_MODE: "report"
+            QUALITY_GATE_REPORT_UNTIL: $report_until
+        } category lint
+        assert ($without_project.exit_code != 0)
+        assert (($without_project.stdout + $without_project.stderr) | str contains 'identify the project')
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -999,29 +1015,29 @@ def test-typescript-solution-references-preserve-project-options [] {
             '}'
         ] | str join (char nl))
         write-fake-node $bin 26
-        write-executable ($bin | path join npm) ([
-            '#!/usr/bin/env nu'
-            'def --wrapped main [...args: string] {'
-            '    let joined = $args | str join " "'
-            '    if ($joined | str contains "--noEmit") {'
-            '        let index = ($args | enumerate | where item == "--project" | get index | first)'
-            '        let config = open ($args | get ($index + 1))'
-            $'        let expected_root = "($root | path expand)"'
-            '        if (($args | get ($index + 1) | path dirname | path expand) != $expected_root) {'
-            '            print "generated TypeScript config must stay beside the project config"'
-            '            exit 1'
-            '        }'
-            '        if ($config.compilerOptions.jsx? | default null) != "react-jsx" {'
-            '            print "solution compiler options were not preserved"'
-            '            exit 1'
-            '        }'
-            '    }'
-            '}'
+        write-fake-tool $bin npm
+        let captured = $root | path join captured-configs
+        mkdir $captured
+        write-executable ($root | path join node_modules .bin tsc) ([
+            '#!/bin/sh'
+            'while [ "$#" -gt 0 ]; do'
+            '  if [ "$1" = "--project" ]; then project="$2"; fi'
+            '  shift'
+            'done'
+            $'cp "$project" "($captured)/${project##*/}"'
+            $'echo "${project%/*}" >> "($captured)/directories.log"'
         ] | str join (char nl))
         let result = run-quality-gate-with-env $root {
             PATH: ($env.PATH | prepend $bin)
         } typecheck typescript
         assert equal $result.exit_code 0
+        let configs = glob ($captured | path join '.quality-gate-tsconfig.*.json')
+        assert equal ($configs | length) 1
+        let config = open ($configs | first)
+        assert equal $config.compilerOptions.jsx 'react-jsx'
+        assert equal $config.compilerOptions.strict true
+        assert ($config.files | any {|file| $file | str ends-with 'src/main.tsx' })
+        assert equal (open --raw ($captured | path join directories.log) | str trim) ($root | path expand | into string)
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
