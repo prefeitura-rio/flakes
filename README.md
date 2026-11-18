@@ -290,8 +290,9 @@ Repositories may add one `.quality-gate/exclude` at the repository root. It uses
 one path/glob per line, with blank lines and `#` comments ignored. Exclusions
 are intended only for generated code, migrations and vendored code; they cannot
 disable an individual rule. A nested `.quality-gate/exclude` is rejected. The
-runner applies the paths to project discovery,
-Python/Ruff, TypeScript/Oxlint/Oxfmt, ast-grep, basedpyright and golangci-lint.
+runner applies the paths to project discovery, auto-fix,
+Python/Ruff, complexipy, TypeScript/Oxlint/Oxfmt/tsc, ast-grep, basedpyright,
+golangci-lint and the Go package list used by `go vet` and `go build`.
 Keep this file under CODEOWNERS review in consumers.
 
 ```text
@@ -340,15 +341,43 @@ The default mode is blocking. A consumer may temporarily set
 ahead and an expired/missing deadline blocks the execution. All checks and
 reports still run, but failures are marked `REPORT-ONLY` during the valid
 window. In GitLab CI, the project and exact deadline must also be present in
-the central `policy/report-only.yaml` allowlist. Removing the variable returns
+the central `policy/report-only.yaml` allowlist. The adapter provides the
+project through `QUALITY_GATE_REPORT_PROJECT`; when `CI` is set and it is
+missing, report-only mode is refused. Removing the variable returns
 the consumer to blocking mode.
 
-The Quality Gate ships Node.js 22, 24 and 26 runtimes and selects the major
-declared by `.node-version` (or `QUALITY_GATE_NODE_VERSION`). Python execution
-uses the pinned `python3` runtime and disables interpreter downloads; projects
-whose `requires-python` is incompatible fail instead of silently selecting a
-different runtime. `GOTOOLCHAIN=local` likewise prevents Go from downloading a
-new toolchain during a check.
+### Runtimes
+
+Each project picks its own runtime, so a monorepo can mix versions:
+
+- **Node.js** 22, 24 and 26 are bundled. The major in the project's
+  `.node-version` (or `QUALITY_GATE_NODE_VERSION`) selects the runtime for that
+  project's install, typecheck and tests; a major that is not bundled fails with
+  an `engine` error instead of silently using another one.
+- **Python** 3.11 to 3.14 are bundled and `uv` may use only those (no
+  downloads). `.python-version` or `requires-python` selects the interpreter;
+  a version that is not bundled fails with an `engine` error. The Python app is
+  about 380 MiB larger because it carries four interpreters.
+- **Go** never downloads a toolchain (`GOTOOLCHAIN=local`).
+- TypeScript is checked with the project's own `node_modules/.bin/tsc` (or
+  `vue-tsc`), so the project must declare `typescript` and commit its lockfile.
+
+### Finding or engine
+
+Every failed check in the console, Markdown and JUnit reports is classified.
+The classification follows the tool's exit code, not its text:
+
+| Tool | `finding` | `engine` |
+| --- | --- | --- |
+| ruff, ruff format, oxfmt, oxlint, ast-grep, complexipy, basedpyright, `go vet`, `go build` | exit 1 | any other non-zero exit |
+| golangci-lint | exit 1 | exit 3 (it could not run) and anything else |
+| `tsc`, `vue-tsc` | exit 1 or 2 | any other non-zero exit |
+| `pytest`, `go test`, `npm test`, `pnpm test` | any failure | - |
+| `uv sync`, `npm ci`, `pnpm install` | - | any failure |
+
+Oxlint reports an invalid configuration with exit 1, so that one message is
+treated as `engine`. The canary analysis considers any `engine` result a failure
+of the Quality Gate itself.
 
 Inline suppressions must identify the specific rule and include a justification.
 The central Ruff, golangci-lint, basedpyright and Oxlint policies reject

@@ -1,3 +1,9 @@
-/devenv/files/quality-gate/ @phrmendes @gabriel-milan
-/release/ @phrmendes @gabriel-milan
+/.github/CODEOWNERS @phrmendes @gabriel-milan
 /.github/workflows/ @phrmendes @gabriel-milan
+/devenv/files/quality-gate/ @phrmendes @gabriel-milan
+/devenv/quality-gate.nix @phrmendes @gabriel-milan
+/flake.nix @phrmendes @gabriel-milan
+/flake.lock @phrmendes @gabriel-milan
+/release/ @phrmendes @gabriel-milan
+/tests/snapshots/ @phrmendes @gabriel-milan
+/tests/fixtures/ @phrmendes @gabriel-milan
