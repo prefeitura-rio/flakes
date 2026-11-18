@@ -36,3 +36,20 @@ Do not use the generic GitHub Actions integration as a bypass actor: a workflow
 from an unreviewed branch would then have the same authority. The App must
 also be the identity used by the reusable release workflow and by emergency
 promotion. PRs created by the App trigger normal validation workflows.
+
+## Applying the governance
+
+`apply.sh` configures everything this flow depends on: the three Environments
+(only `master` may deploy, admins cannot bypass, the emergency one requires the
+two reviewers and forbids self-review), read-only default workflow permissions
+and both rulesets, with the App as the only bypass actor of the tags ruleset.
+It is a dry run unless `--apply` is passed:
+
+```bash
+release/rulesets/apply.sh --app-id <App ID>            # prints every request
+release/rulesets/apply.sh --app-id <App ID> --apply    # applies them
+```
+
+Use the **App ID** from the App settings page, not the installation ID. The
+script prints the environment secrets you must create afterwards; it never
+copies secret values.

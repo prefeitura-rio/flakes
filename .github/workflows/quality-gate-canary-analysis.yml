@@ -33,6 +33,7 @@ jobs:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     name: Analyze Quality Gate canary
     runs-on: ubuntu-latest
+    environment: quality-gate-release
     env:
       GITLAB_API: https://git.iplan.rio/api/v4
       GITLAB_TOKEN: ${{ secrets.GITLAB_CANARY_TOKEN }}
