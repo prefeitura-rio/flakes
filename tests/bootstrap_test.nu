@@ -170,7 +170,7 @@ def test-runner-dispatches-each-command-to-the-matching-app [] {
             {arguments: [lint go], app: quality-gate-go}
             {arguments: [format python ruff], app: quality-gate-python}
             {arguments: [category lint], app: quality-gate}
-            {arguments: [detect], app: quality-gate}
+            {arguments: [detect], app: quality-gate-detect}
         ]
         let failures = $cases | each {|case|
             '' | save --force $fixture.log
