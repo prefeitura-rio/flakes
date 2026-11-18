@@ -4,38 +4,31 @@ These JSON files are the desired repository policy for `master` and all
 `quality-gate-*` tags. They are kept as code so the policy can be reviewed
 alongside the release workflow.
 
-The tag ruleset allows the GitHub Actions integration (ID `15368`) to publish
-immutable version tags and move the mutable `quality-gate-latest` tag. All
-other actors are blocked from creating, updating or deleting matching tags.
-Version tags remain immutable in the release script; the bypass is required
-only because GitHub cannot distinguish the mutable tag from the version-tag
-pattern.
+The tag ruleset allows only the dedicated release GitHub App (App ID `5818520`,
+see [APP-SETUP.md](APP-SETUP.md)) to create, update or delete `quality-gate-*`
+tags: it publishes immutable version tags and moves the mutable
+`quality-gate-next` and `quality-gate-latest` tags. Everyone else, including the
+generic GitHub Actions integration, is blocked. Version tags stay immutable in
+the release script; the bypass exists only because GitHub cannot tell the mutable
+tags from the version-tag pattern.
 
-The `master` ruleset requires pull-request delivery, linear history, and the
-Quality Gate self-test status. It intentionally has no bypass actor.
+The `master` ruleset requires pull-request delivery, code-owner review, linear
+history, and the Quality Gate self-test and Darwin build. It has no bypass actor.
 
-## Apply
+## Apply and verify
 
-Applying a ruleset is an administrative operation. Review the JSON and the
-repository's current branch policy before applying it:
-
-```bash
-gh api --method POST \
-  repos/prefeitura-rio/flakes/rulesets \
-  --input release/rulesets/quality-gate-tags.json
-
-gh api --method POST \
-  repos/prefeitura-rio/flakes/rulesets \
-  --input release/rulesets/master.json
-```
-
-Use `PATCH /repos/prefeitura-rio/flakes/rulesets/<id>` when updating an
-existing ruleset rather than creating a duplicate. Inspect current rulesets
-first:
+Applying governance is an administrative operation, so it is never done by CI.
+Use `apply.sh` instead of calling the API by hand: it compares every resource
+with GitHub and only changes what differs, so it can be run again at any time.
 
 ```bash
-gh api repos/prefeitura-rio/flakes/rulesets \
-  --jq '.[] | [.id, .name, .enforcement, .target] | @tsv'
+release/rulesets/apply.sh --app-id 5818520             # dry run: what would change
+release/rulesets/apply.sh --app-id 5818520 --apply     # change it
+release/rulesets/apply.sh --app-id 5818520 --verify    # read only; exit 1 on any difference
 ```
 
-The rulesets are not applied automatically by CI.
+It covers the three Environments, the default workflow permissions and both
+rulesets (an existing ruleset with the same name is updated with
+`PUT /repos/prefeitura-rio/flakes/rulesets/<id>`, never duplicated). `--verify`
+also fails while any protected secret is still stored at repository level or is
+missing from its Environment; secret values are never read or copied.

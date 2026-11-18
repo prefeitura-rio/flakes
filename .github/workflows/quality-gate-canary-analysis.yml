@@ -237,31 +237,8 @@ jobs:
             exit 0
           fi
 
-          branch="automation/quality-gate-promotion-${version_tag}"
-          existing_pr="$(gh pr list --state open --head "$branch" --json number --jq '.[0].number // empty')"
-          if [ -n "$existing_pr" ]; then
-            echo "Promotion PR #${existing_pr} already exists for ${version_tag}."
-            exit 0
-          fi
           git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git switch --create "$branch"
-          previous="$(awk -F': *' '$1 == "latest" { print $2 }' release/channels.yaml | tr -d '"')"
-          sed -i -E "s/^latest:.*$/latest: \"$version_tag\"/" release/channels.yaml
-          if grep -q '^previous:' release/channels.yaml; then
-            sed -i -E "s/^previous:.*$/previous: \"${previous}\"/" release/channels.yaml
-          else
-            sed -i "/^latest:/a previous: \"${previous}\"" release/channels.yaml
-          fi
-          git add release/channels.yaml
-          git -c user.name="github-actions[bot]" \
-            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -m "chore: promote Quality Gate ${version_tag}"
-          git push --set-upstream origin "$branch"
-          gh pr create \
-            --base master \
-            --head "$branch" \
-            --title "chore: promote Quality Gate ${version_tag}" \
-            --body "Automated canary analysis passed for \`${version_tag}\` after the three-day bake period. See the workflow artifact for per-sandbox findings and engine classification."
+          bash release/scripts/open-promotion-pr.sh --version-tag "$version_tag"
       - name: Upload canary analysis
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

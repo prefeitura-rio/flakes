@@ -43,13 +43,33 @@ promotion. PRs created by the App trigger normal validation workflows.
 (only `master` may deploy, admins cannot bypass, the emergency one requires the
 two reviewers and forbids self-review), read-only default workflow permissions
 and both rulesets, with the App as the only bypass actor of the tags ruleset.
-It is a dry run unless `--apply` is passed:
+It compares each resource with GitHub first, so running it again changes nothing.
 
 ```bash
-release/rulesets/apply.sh --app-id <App ID>            # prints every request
-release/rulesets/apply.sh --app-id <App ID> --apply    # applies them
+release/rulesets/apply.sh --app-id <App ID>             # dry run
+release/rulesets/apply.sh --app-id <App ID> --apply     # apply
+release/rulesets/apply.sh --app-id <App ID> --verify    # read only, exit 1 on drift
 ```
 
-Use the **App ID** from the App settings page, not the installation ID. The
-script prints the environment secrets you must create afterwards; it never
-copies secret values.
+Use the **App ID** from the App settings page, not the installation ID.
+
+## Where each secret lives
+
+A secret stored at repository level is readable by a workflow in any branch with
+write access, which would let that branch mint an App token and move the
+`quality-gate-*` tags the ruleset protects. Every protected secret therefore
+lives only in the Environment that guards it, and the job that uses it declares
+that Environment:
+
+| Environment | Secrets | Used by |
+| --- | --- | --- |
+| `quality-gate-release` | `QUALITY_GATE_RELEASE_APP_ID`, `QUALITY_GATE_RELEASE_APP_PRIVATE_KEY`, `GITLAB_CANARY_TOKEN` | release (through the `environment` input of the reusable release workflow), automated promotion, canary analysis |
+| `quality-gate-promotion` | `QUALITY_GATE_RELEASE_APP_ID`, `QUALITY_GATE_RELEASE_APP_PRIVATE_KEY` | emergency rollback (two reviewers) |
+| `cachix-publish` | `CACHIX_AUTH_TOKEN` | the two cache publication jobs |
+
+The reusable release workflow in `prefeitura-rio/actions` accepts an optional
+`environment` input; `quality-gate-release.yml` passes `quality-gate-release`
+and still hands over the two App secrets by name. After the Environments exist,
+create the secrets there, **delete the repository-level copies** (rotate the
+Cachix token first, since it was readable until now) and run `--verify`: it
+fails while any copy remains or any Environment secret is missing.
