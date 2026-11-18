@@ -378,16 +378,18 @@ def test-pnpm-typecheck-requires-a-versioned-package-manager [] {
         write-fixture-file $root pnpm-lock.yaml "lockfileVersion: 9.0\n"
         write-fixture-file $root tsconfig.json '{"compilerOptions":{"strict":true}}'
         write-fixture-file $root .node-version "26\n"
-        let result = run-quality-gate $root typecheck typescript
+        let bin = $root | path join bin
+        let log = $root | path join commands.log
+        write-fake-node $bin 26
+        let result = run-quality-gate-with-env $root {
+            PATH: ($env.PATH | prepend $bin)
+        } typecheck typescript
         assert ($result.exit_code != 0)
         assert (($result.stdout + $result.stderr) | str contains 'requires package.json packageManager')
 
-        let bin = $root | path join bin
-        let log = $root | path join commands.log
         write-fixture-file $root package.json "{\n  \"name\": \"fixture\",\n  \"private\": true,\n  \"packageManager\": \"pnpm@9.1.0\"\n}\n"
         write-fake-tool $bin pnpm
         write-executable ($bin | path join tsc) "#!/usr/bin/env nu\nprint '{\"compilerOptions\":{},\"files\":[]}'\n"
-        write-fake-node $bin 26
         let valid = run-quality-gate-with-env $root {
             PATH: ($env.PATH | prepend $bin)
             QUALITY_GATE_FAKE_LOG: $log
