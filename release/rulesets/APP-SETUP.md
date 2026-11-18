@@ -27,10 +27,10 @@ be able to approve their own request.
 
 ## Ruleset actor
 
-Replace the placeholder bypass actor in
-`release/rulesets/quality-gate-tags.json` with the numeric integration ID of
-the installed App. The tags ruleset must allow only this App to create, update
-or delete `quality-gate-*` refs.
+Set the bypass actor in
+`release/rulesets/quality-gate-tags.json` to the numeric integration ID of
+the installed App (`5818520` in the current organization). The tags ruleset
+must allow only this App to create, update or delete `quality-gate-*` refs.
 
 Do not use the generic GitHub Actions integration as a bypass actor: a workflow
 from an unreviewed branch would then have the same authority. The App must
