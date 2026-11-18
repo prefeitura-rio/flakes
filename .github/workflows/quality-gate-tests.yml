@@ -3,17 +3,6 @@ name: Quality Gate Tests
 on:
   pull_request:
     branches: [master]
-    paths:
-      - "devenv/**"
-      - "devenv.nix"
-      - "devenv.yaml"
-      - "devenv.lock"
-      - "flake.nix"
-      - "flake.lock"
-      - "pkgs/**"
-      - "tests/**"
-      - "release/**"
-      - ".github/**"
   push:
     branches: [master]
   workflow_dispatch:

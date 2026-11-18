@@ -6,7 +6,7 @@ on:
     types: [completed]
     branches: [master]
   schedule:
-    - cron: "37 * * * *"
+    - cron: "37 4 * * *"
   workflow_dispatch:
     inputs:
       candidate_ref:
@@ -35,23 +35,34 @@ jobs:
     env:
       GITLAB_API: https://git.iplan.rio/api/v4
       GITLAB_TOKEN: ${{ secrets.GITLAB_CANARY_TOKEN }}
-      GITHUB_TOKEN: ${{ github.token }}
       CANDIDATE_REF_INPUT: ${{ inputs.candidate_ref }}
-      CREATE_PROMOTION_PR: ${{ github.event_name != 'workflow_dispatch' || inputs.create_promotion_pr }}
+      HAS_RELEASE_APP: ${{ secrets.QUALITY_GATE_RELEASE_APP_ID != '' && secrets.QUALITY_GATE_RELEASE_APP_PRIVATE_KEY != '' }}
+      CREATE_PROMOTION_PR: ${{ (github.event_name != 'workflow_dispatch' || inputs.create_promotion_pr) && secrets.QUALITY_GATE_RELEASE_APP_ID != '' && secrets.QUALITY_GATE_RELEASE_APP_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
-      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
       - name: Use Quality Gate binary cache
         uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
           name: prefeitura-rio
           extraPullNames: devenv
           skipPush: true
+      - name: Create release App token
+        if: env.HAS_RELEASE_APP == 'true'
+        uses: actions/create-github-app-token@0f859bf9e69e887678d5bbfbee594437cb440ffe # v2.1.0
+        id: release-token
+        with:
+          app-id: ${{ secrets.QUALITY_GATE_RELEASE_APP_ID }}
+          private-key: ${{ secrets.QUALITY_GATE_RELEASE_APP_PRIVATE_KEY }}
+          owner: prefeitura-rio
+          repositories: flakes
       - name: Trigger and analyze sandbox pipelines
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ steps.release-token.outputs.token || github.token }}
         run: |
           set -euo pipefail
 
@@ -75,6 +86,18 @@ jobs:
 
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
+          artifact_name="quality-gate-canary-${candidate_sha}"
+          echo "CANARY_ARTIFACT_NAME=$artifact_name" >> "$GITHUB_ENV"
+          previous_artifact_id="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=100" \
+            --jq '.artifacts[] | select(.expired == false) | .id' | head -n 1 || true)"
+          if [ -n "$previous_artifact_id" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${previous_artifact_id}/zip" > "$tmp/previous.zip"
+            if unzip -p "$tmp/previous.zip" canary-analysis.json | jq -e '.healthy == true' >/dev/null; then
+              echo "Candidate ${candidate_sha} already has a healthy canary analysis."
+              exit 0
+            fi
+          fi
           pipelines="$tmp/pipelines.tsv"
           cat > "$tmp/projects.tsv" <<'EOF'
           48|python-battlegrounds
@@ -133,15 +156,29 @@ jobs:
               trace="$(curl --fail-with-body --silent --show-error \
                 --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
                 "$GITLAB_API/projects/$project_id/jobs/$job_id/trace" || true)"
+              junit=""
+              if [[ "$job_name" =~ ^quality-gate:(format|lint|strlint|typecheck|tests)$ ]]; then
+                artifact="$tmp/artifact-${job_id}.zip"
+                if curl --fail-with-body --silent --show-error \
+                  --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+                  "$GITLAB_API/projects/$project_id/jobs/$job_id/artifacts" \
+                  --output "$artifact"; then
+                  member="$(unzip -Z1 "$artifact" | grep -E 'quality-gate-(format|lint|strlint|test)\.xml$' | head -n 1 || true)"
+                  if [ -n "$member" ]; then
+                    junit="$(unzip -p "$artifact" "$member")"
+                  fi
+                fi
+              fi
               jq --arg name "$job_name" \
                 --arg status "$job_status" \
                 --arg trace "$trace" \
-                '. += [{name: $name, status: $status, trace: $trace}]' \
+                --arg junit "$junit" \
+                '. += [{name: $name, status: $status, trace: $trace, junit: $junit}]' \
                 "$jobs_file" > "$jobs_file.tmp"
               mv "$jobs_file.tmp" "$jobs_file"
             done < <(jq -r '.[] | [.id, .name, .status] | @tsv' <<<"$jobs")
 
-            analysis="$(nix --extra-experimental-features 'nix-command flakes' run nixpkgs#nushell -- \
+            analysis="$(nix --extra-experimental-features 'nix-command flakes' run --inputs-from . nixpkgs#nushell -- \
               release/canary-analysis.nu evaluate release/canary-expectations.yaml "$project_id" "$jobs_file")"
             jq --arg id "$project_id" --arg name "$project_name" \
               --argjson analysis "$analysis" \
@@ -151,7 +188,7 @@ jobs:
           done < "$pipelines"
 
           jq --arg candidate_ref "$candidate_ref" --arg candidate_sha "$candidate_sha" \
-            '{candidate_ref: $candidate_ref, candidate_sha: $candidate_sha, projects: .}' \
+            '{candidate_ref: $candidate_ref, candidate_sha: $candidate_sha, projects: ., healthy: ([.[].analysis.healthy] | all)}' \
             "$results" | tee canary-analysis.json
 
           {
@@ -174,6 +211,7 @@ jobs:
             exit 0
           fi
 
+          test "$(git cat-file -t "refs/tags/$version_tag")" = tag
           candidate_created="$(git for-each-ref --format='%(creatordate:iso-strict)' "refs/tags/$version_tag")"
           current_sha="$(git rev-parse --verify 'refs/tags/quality-gate-latest^{commit}' 2>/dev/null || true)"
           current=""
@@ -181,14 +219,20 @@ jobs:
             current="$(git tag --points-at "$current_sha" 'quality-gate-v*' | head -n 1)"
           fi
           now="$(date --iso-8601=seconds --utc)"
-          decision="$(nix --extra-experimental-features 'nix-command flakes' run nixpkgs#nushell -- \
+          decision="$(nix --extra-experimental-features 'nix-command flakes' run --inputs-from . nixpkgs#nushell -- \
             release/promote.nu validate "$version_tag" "$current" "$candidate_created" "$now" 3 | jq -r .decision)"
           if [ "$decision" != promote ] || [ "$CREATE_PROMOTION_PR" != true ]; then
             echo "Canary is healthy but is not ready for automatic promotion."
             exit 0
           fi
 
-          branch="automation/quality-gate-promotion-${version_tag}-${GITHUB_RUN_ID}"
+          branch="automation/quality-gate-promotion-${version_tag}"
+          existing_pr="$(gh pr list --state open --head "$branch" --json number --jq '.[0].number // empty')"
+          if [ -n "$existing_pr" ]; then
+            echo "Promotion PR #${existing_pr} already exists for ${version_tag}."
+            exit 0
+          fi
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git switch --create "$branch"
           previous="$(awk -F': *' '$1 == "latest" { print $2 }' release/channels.yaml | tr -d '"')"
           sed -i -E "s/^latest:.*$/latest: \"$version_tag\"/" release/channels.yaml
@@ -209,8 +253,8 @@ jobs:
             --body "Automated canary analysis passed for \`${version_tag}\` after the three-day bake period. See the workflow artifact for per-sandbox findings and engine classification."
       - name: Upload canary analysis
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: quality-gate-canary-analysis
+          name: ${{ env.CANARY_ARTIFACT_NAME }}
           path: canary-analysis.json
           if-no-files-found: ignore
