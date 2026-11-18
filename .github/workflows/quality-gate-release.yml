@@ -88,7 +88,7 @@ jobs:
     permissions:
       actions: read
       contents: write
-    uses: prefeitura-rio/actions/.github/workflows/release.yml@61170b0e2981a3f66fc5c9b7ff7cf23f1ae57b3f
+    uses: prefeitura-rio/actions/.github/workflows/release.yml@f7f930e3a1ee9306fe7a7f2a780c3747803bbee3
     with:
       release_branch: master
       target_sha: ${{ github.event.workflow_run.head_sha }}
