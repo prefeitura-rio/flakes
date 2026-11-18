@@ -146,6 +146,20 @@ nix-env --upgrade --attr devenv -f https://github.com/NixOS/nixpkgs/tarball/nixp
 
 Check it with `devenv --version`. Then `devenv shell` in this repository gives you the development environment.
 
+### 4. Enable the Prefeitura Rio binary cache
+
+The Quality Gate uses the public `prefeitura-rio` and `devenv` Cachix caches.
+Add the substituters and public keys below to `~/.config/nix/nix.conf` so
+local hooks can use the cache without compiling `complexipy`:
+
+```ini
+extra-substituters = https://prefeitura-rio.cachix.org https://devenv.cachix.org
+extra-trusted-public-keys = prefeitura-rio.cachix.org-1:Y+SotJw1tzXRsM/a6Af2mwX8HTZjnefjsuFT0DNevX8= devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=
+```
+
+These settings are for reading public caches only; do not put a Cachix write
+token in `nix.conf`.
+
 ## Conventions
 
 - Nix files have no comments. The documentation lives in option `description` and `example` fields, in package `meta`, and in the READMEs.

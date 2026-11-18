@@ -101,4 +101,3 @@ jobs:
       required_workflow: Quality Gate Tests
       git_author_name: CI Release Bot
       git_author_email: 41898282+github-actions[bot]@users.noreply.github.com
-    secrets: inherit
