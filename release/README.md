@@ -55,6 +55,10 @@ To opt a consumer into the canary during the bake period, set:
 The canary is opt-in. `quality-gate-latest` remains the stable channel and is
 only updated by the promotion workflow.
 
+The release and promotion workflows are prepared for a dedicated GitHub App;
+see [the setup runbook](rulesets/APP-SETUP.md). Until that App is installed and
+the tag ruleset is applied, do not publish the first Quality Gate release.
+
 ## Consumer synchronization
 
 The GitLab adapter resolves `quality-gate-latest` to one commit SHA at the start

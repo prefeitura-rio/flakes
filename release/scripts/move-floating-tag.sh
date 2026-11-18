@@ -61,6 +61,7 @@ if [[ ! "$candidate_tag" =~ ^quality-gate-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 candidate_sha=$(git -C "$repository" rev-parse --verify "${candidate_tag}^{commit}")
+old_floating_sha=$(git -C "$repository" ls-remote "$remote" "refs/tags/${floating_tag}" | awk 'NR == 1 { print $1 }')
 
 git -C "$repository" \
   -c user.name="github-actions[bot]" \
@@ -68,7 +69,10 @@ git -C "$repository" \
   tag -fa "$floating_tag" "$candidate_sha" \
   -m "Promote ${candidate_tag}"
 
-git -C "$repository" push "$remote" "refs/tags/${floating_tag}" --force
+git -C "$repository" push \
+  "$remote" \
+  "refs/tags/${floating_tag}" \
+  "--force-with-lease=refs/tags/${floating_tag}:${old_floating_sha}"
 
 printf 'floating_tag=%s\n' "$floating_tag"
 printf 'candidate_tag=%s\n' "$candidate_tag"

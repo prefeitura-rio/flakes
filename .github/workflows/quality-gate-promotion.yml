@@ -31,6 +31,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: quality-gate-promotion
+  cancel-in-progress: false
+
 jobs:
   validate:
     if: github.event_name == 'pull_request'
@@ -41,7 +45,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
       - name: Validate promotion decision
         run: |
           set -euo pipefail
@@ -81,10 +85,20 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - uses: actions/create-github-app-token@0f859bf9e69e887678d5bbfbee594437cb440ffe # v2.1.0
+        id: release-token
+        with:
+          app-id: ${{ secrets.QUALITY_GATE_RELEASE_APP_ID }}
+          private-key: ${{ secrets.QUALITY_GATE_RELEASE_APP_PRIVATE_KEY }}
+          owner: prefeitura-rio
+          repositories: flakes
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
       - name: Promote stable channel
+        env:
+          RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
         run: |
           set -euo pipefail
+          git remote set-url origin "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           candidate="$(awk -F': *' '$1 == "latest" { print $2 }' release/channels.yaml | tr -d '"')"
           if [ -z "$candidate" ]; then
             echo "No stable channel is selected yet; promotion is a no-op."
@@ -127,14 +141,23 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - uses: actions/create-github-app-token@0f859bf9e69e887678d5bbfbee594437cb440ffe # v2.1.0
+        id: release-token
+        with:
+          app-id: ${{ secrets.QUALITY_GATE_RELEASE_APP_ID }}
+          private-key: ${{ secrets.QUALITY_GATE_RELEASE_APP_PRIVATE_KEY }}
+          owner: prefeitura-rio
+          repositories: flakes
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
       - name: Promote or roll back after approval
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
           EMERGENCY_REASON: ${{ inputs.reason }}
           TARGET_TAG_INPUT: ${{ inputs.target_tag }}
         run: |
           set -euo pipefail
+          git remote set-url origin "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           candidate="$TARGET_TAG_INPUT"
           bake_days="$(awk -F': *' '$1 == "bake_days" { print $2 }' release/channels.yaml)"
           git rev-parse --verify "refs/tags/$candidate^{}" >/dev/null
@@ -215,6 +238,8 @@ jobs:
           actual_sha="$(git rev-parse --verify 'refs/tags/quality-gate-latest^{commit}' 2>/dev/null || true)"
           diverged=false
           if [ -n "$expected" ] && [ "$expected_sha" != "$actual_sha" ]; then
+            diverged=true
+          elif [ -z "$expected" ] && [ -n "$actual_sha" ]; then
             diverged=true
           fi
           if [ "$diverged" = true ]; then
