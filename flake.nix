@@ -57,14 +57,20 @@
           commonPackages = with pkgs; [
             ast-grep
             git
-            gnused
             nushell
           ];
+          pythonRuntimes = pkgs.runCommand "quality-gate-python-runtimes" { } ''
+            mkdir -p $out/bin
+            ln -s ${pkgs.python311}/bin/python3.11 $out/bin/python3.11
+            ln -s ${pkgs.python312}/bin/python3.12 $out/bin/python3.12
+            ln -s ${pkgs.python313}/bin/python3.13 $out/bin/python3.13
+            ln -s ${pkgs.python314}/bin/python3.14 $out/bin/python3.14
+          '';
           languagePackages = {
             python = with pkgs; [
               basedpyright
               complexipy
-              python3
+              pythonRuntimes
               ruff
               uv
             ];
@@ -75,9 +81,7 @@
               golangci-lint
             ];
             typescript = with pkgs; [
-              nodejs_22
               nodejs_24
-              nodejs_26
               oxfmt
               oxlint
               pnpm
@@ -96,16 +100,9 @@
             name = if language == null then "quality-gate" else "quality-gate-${language}";
             runtimeInputs = qualityGatePackages;
             text = ''
-              node_version_file="''${QUALITY_GATE_PROJECT_DIR:-.}/.node-version"
-              node_version="''${QUALITY_GATE_NODE_VERSION:-}"
-              if [ -f "$node_version_file" ]; then
-                node_version="$(sed -n '1{s/^v//;s/\..*//;p;}' "$node_version_file")"
-              fi
-              case "$node_version" in
-                22) export PATH="${pkgs.nodejs_22}/bin:$PATH" ;;
-                24) export PATH="${pkgs.nodejs_24}/bin:$PATH" ;;
-                26) export PATH="${pkgs.nodejs_26}/bin:$PATH" ;;
-              esac
+              export QUALITY_GATE_NODE_22_BIN=${pkgs.nodejs_22}/bin
+              export QUALITY_GATE_NODE_24_BIN=${pkgs.nodejs_24}/bin
+              export QUALITY_GATE_NODE_26_BIN=${pkgs.nodejs_26}/bin
               export QUALITY_GATE_GO_RULES=${lib.escapeShellArg "${./devenv/files/quality-gate/go/rules}"}
               export QUALITY_GATE_GO_CONFIG=${lib.escapeShellArg "${./devenv/files/quality-gate/go/.golangci.yml}"}
               export QUALITY_GATE_PYTHON_RULES=${lib.escapeShellArg "${./devenv/files/quality-gate/python/rules}"}
@@ -116,7 +113,7 @@
               export QUALITY_GATE_OXLINT_CONFIG=${lib.escapeShellArg "${./devenv/files/quality-gate/typescript/.oxlintrc.json}"}
               export QUALITY_GATE_OXFMT_CONFIG=${lib.escapeShellArg "${./devenv/files/quality-gate/typescript/.oxfmtrc.json}"}
               export QUALITY_GATE_REPORT_POLICY=${lib.escapeShellArg "${./devenv/files/quality-gate/policy/report-only.yaml}"}
-              export UV_PYTHON=python3
+              export UV_PYTHON_PREFERENCE=only-system
               export UV_PYTHON_DOWNLOADS=never
               export GOTOOLCHAIN=local
               exec ${pkgs.nushell}/bin/nu ${./devenv/files/quality-gate/quality-gate.nu} "$@"

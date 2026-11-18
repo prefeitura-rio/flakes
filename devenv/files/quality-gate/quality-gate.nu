@@ -203,8 +203,12 @@ def report-only []: nothing -> bool {
     if $deadline > ($now + 45day) {
         error make {msg: 'QUALITY_GATE_REPORT_UNTIL cannot be more than 45 days in the future.'}
     }
-    let ci_project = $env.CI_PROJECT_PATH? | default ''
-    if ($ci_project | is-not-empty) {
+    let in_ci = (($env.QUALITY_GATE_CI? | default '') == 'true') or (($env.CI? | default '') | is-not-empty)
+    let ci_project = $env.QUALITY_GATE_REPORT_PROJECT? | default ($env.CI_PROJECT_PATH? | default '')
+    if $in_ci and ($ci_project | is-empty) {
+        error make {msg: 'Report-only mode in CI requires the adapter to identify the project (QUALITY_GATE_REPORT_PROJECT).'}
+    }
+    if $in_ci {
         let policy_file = $env.QUALITY_GATE_REPORT_POLICY? | default ''
         if ($policy_file | is-empty) or not ($policy_file | path exists) {
             error make {msg: 'Report-only mode is not allowed in CI without the central policy file.'}
@@ -220,17 +224,42 @@ def report-only []: nothing -> bool {
 }
 
 def capture [command: string, arguments: list<string>]: nothing -> record {
-    run-external $command ...$arguments | complete
+    with-env {NO_COLOR: '1', TERM: 'dumb'} {
+        hide-env --ignore-errors FORCE_COLOR
+        hide-env --ignore-errors CLICOLOR_FORCE
+        run-external $command ...$arguments | complete
+    }
+}
+
+# Tool output may carry terminal escape sequences (colors, OSC 8 hyperlinks)
+# and other control characters. They are invalid in XML 1.0, so reports must
+# never contain them.
+def strip-terminal-codes [value: string]: nothing -> string {
+    $value
+    | str replace --all --regex '\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)' ''
+    | str replace --all --regex '\x1b\[[0-9;?]*[ -/]*[@-~]' ''
+    | str replace --all --regex '[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]' ''
 }
 
 def record-output [text: string] {
     let output_file = ($env.QUALITY_GATE_CHECK_OUTPUT? | default null)
     if $output_file == null or ($text | is-empty) { return }
     let previous = if ($output_file | path exists) { open --raw $output_file } else { '' }
-    ($previous + $text + (char nl)) | save --force $output_file
+    ($previous + (strip-terminal-codes $text) + (char nl)) | save --force $output_file
 }
 
-def run-check [name: string, command: string, arguments: list<string>] {
+# A check reports `finding` only when the tool exits with one of `finding-codes`
+# (the exit codes that mean "the code violates the policy"). Every other
+# non-zero exit means the tool could not run and is reported as `engine`.
+# Tests run consumer code, so any failure of a test runner is a `finding`.
+def run-check [
+    name: string
+    command: string
+    arguments: list<string>
+    --finding-codes: list<int>
+    --any-failure-is-finding
+    --engine-markers: list<string>
+] {
     log info $'Running ($name)...'
     let result = capture $command $arguments
 
@@ -245,11 +274,27 @@ def run-check [name: string, command: string, arguments: list<string>] {
         record-output $output
     }
     if $result.exit_code != 0 {
-        let category = if $result.exit_code == 1 { 'finding' } else { 'engine' }
+        let codes = $finding_codes | default [1]
+        let output = $'($result.stdout)($result.stderr)'
+        let engine_marker = ($engine_markers | default []) | any {|marker| $output | str contains $marker }
+        let category = if $engine_marker {
+            'engine'
+        } else if $any_failure_is_finding or ($result.exit_code in $codes) {
+            'finding'
+        } else {
+            'engine'
+        }
         error make {
             msg: $'($category): ($name) failed with exit code ($result.exit_code)'
         }
     }
+}
+
+def format-check-failure [tool: string, result: record, message: string] {
+    if $result.exit_code == 1 {
+        error make {msg: $'finding: ($message)'}
+    }
+    error make {msg: $'engine: ($tool) failed with exit code ($result.exit_code) while checking formatting'}
 }
 
 def warn-local-quality-config [files: list<string>] {
@@ -329,7 +374,7 @@ def validate-quality-gate-exclusions []: nothing -> nothing {
         ($pattern | str trim) in ['' '*' '**' '**/*' '.' './' '/']
     }
     if ($broad | is-not-empty) {
-        error make {msg: $'Invalid .quality-gate/exclude pattern(s): (($broad | str join ", ")). Broad patterns cannot disable the Quality Gate.'}
+        error make {msg: $'Invalid .quality-gate/exclude patterns: ($broad | str join ", "). Broad patterns cannot disable the Quality Gate.'}
     }
 
     let scope = quality-gate-root
@@ -406,7 +451,7 @@ def sync-python []: nothing -> nothing {
     if $current == $fingerprint {
         log info 'uv dependencies are up to date; skipping uv sync.'
     } else {
-        run-check 'uv sync' uv [sync --locked --all-groups]
+        run-check 'uv sync' uv [sync --locked --all-groups] --finding-codes []
         mkdir .venv
         $fingerprint | save --force $marker
     }
@@ -447,9 +492,11 @@ def format-python [] {
 
     if ($result.stdout | is-not-empty) { print ($result.stdout | str trim) }
     if ($result.stderr | is-not-empty) { print -e ($result.stderr | str trim) }
-    let diff = capture ruff ([format --diff --config $env.QUALITY_GATE_RUFF_CONFIG] ++ $files)
-    if ($diff.stdout | is-not-empty) { print ($diff.stdout | str trim) }
-    error make {msg: 'finding: ruff format found formatting differences; run `qg format py`'}
+    if $result.exit_code == 1 {
+        let diff = capture ruff ([format --diff --config $env.QUALITY_GATE_RUFF_CONFIG] ++ $files)
+        if ($diff.stdout | is-not-empty) { print ($diff.stdout | str trim) }
+    }
+    format-check-failure ruff $result 'ruff format found formatting differences; run `qg format py`'
 }
 
 def lint-python [] {
@@ -650,7 +697,7 @@ def format-go-gofumpt [] {
     }
     let result = capture gofumpt ([-l] ++ $files)
     if $result.exit_code != 0 {
-        error make {msg: 'gofumpt could not inspect the project'}
+        error make {msg: 'engine: gofumpt could not inspect the project'}
     }
     if ($result.stdout | str trim | is-empty) {
         print 'gofumpt: all files are correctly formatted.'
@@ -671,7 +718,7 @@ def format-go-goimports [] {
     }
     let result = capture goimports ([-l] ++ $files)
     if $result.exit_code != 0 {
-        error make {msg: 'goimports could not inspect the project'}
+        error make {msg: 'engine: goimports could not inspect the project'}
     }
     if ($result.stdout | str trim | is-empty) {
         print 'goimports: all import blocks are correctly organised.'
@@ -688,7 +735,7 @@ def lint-go-golangci [] {
     warn-local-quality-config ['.golangci.yml' '.golangci.yaml' '.golangci.toml' '.golangci.json']
     let config = (go-quality-config)
     try {
-        run-check 'golangci-lint' golangci-lint [run --config $config]
+        run-check 'golangci-lint' golangci-lint [run --allow-parallel-runners --config $config]
     } finally {
         rm $config
     }
@@ -738,15 +785,16 @@ def go-packages []: nothing -> list<string> {
     if (quality-gate-exclude-patterns | is-empty) {
         return ['./...']
     }
-    let result = capture go [list -f '{{.ImportPath}}\t{{.Dir}}' ./...]
+    let result = capture go [list -f '{{.ImportPath}} {{.Dir}}' ./...]
     if $result.exit_code != 0 {
-        error make {msg: 'go list could not inspect the project'}
+        error make {msg: 'engine: go list could not inspect the project'}
     }
     $result.stdout
     | lines
+    | where {|line| ($line | str trim | is-not-empty) }
     | each {|line|
-        let parts = $line | split row (char tab)
-        { package: ($parts | get 0), directory: ($parts | get 1) }
+        let package = $line | split row ' ' | first
+        { package: $package, directory: ($line | str substring (($package | str length) + 1)..) }
     }
     | where {|row| not (quality-gate-path-excluded $row.directory) }
     | get package
@@ -791,15 +839,15 @@ def install-node-dependencies []: nothing -> nothing {
         return
     }
     if $manager == npm {
-        run-check 'npm ci' npm [ci]
+        run-check 'npm ci' npm [ci] --finding-codes []
     } else {
-        run-check 'pnpm install' pnpm [install --frozen-lockfile]
+        run-check 'pnpm install' pnpm [install --frozen-lockfile] --finding-codes []
     }
     mkdir node_modules
     $fingerprint | save --force $marker
 }
 
-def validate-node-version []: nothing -> nothing {
+def declared-node-major []: nothing -> string {
     let configured = ($env.QUALITY_GATE_NODE_VERSION? | default '')
     let declared = if ('.node-version' | path exists) {
         open --raw .node-version | str trim
@@ -809,7 +857,35 @@ def validate-node-version []: nothing -> nothing {
     if ($declared | is-empty) {
         error make {msg: 'Missing .node-version for TypeScript typecheck. Add the Node.js major version used by the project.'}
     }
-    let expected = $declared | str replace --regex '^v' '' | split row '.' | first
+    $declared | str replace --regex '^v' '' | split row '.' | first
+}
+
+# The app exports one bin directory per bundled Node.js major
+# (QUALITY_GATE_NODE_<major>_BIN); each project selects its own.
+def with-node-runtime [body: closure] {
+    let major = declared-node-major
+    let bin = $env | get --optional $'QUALITY_GATE_NODE_($major)_BIN'
+    if $bin == null {
+        validate-node-version
+        do $body
+    } else {
+        with-env {PATH: ($env.PATH | prepend $bin)} {
+            validate-node-version
+            do $body
+        }
+    }
+}
+
+def local-node-bin [name: string]: nothing -> string {
+    let binary = $env.PWD | path join node_modules .bin $name
+    if not ($binary | path exists) {
+        error make {msg: $'engine: ($name) is not installed in the project. Add it to devDependencies and commit the lockfile.'}
+    }
+    $binary
+}
+
+def validate-node-version []: nothing -> nothing {
+    let expected = declared-node-major
     let actual_result = capture node [--version]
     if $actual_result.exit_code != 0 {
         error make {msg: 'The Quality Gate could not determine the Node.js runtime version.'}
@@ -879,7 +955,7 @@ def format-typescript [] {
     } else {
         if ($result.stdout | is-not-empty) { print ($result.stdout | str trim) }
         if ($result.stderr | is-not-empty) { print -e ($result.stderr | str trim) }
-        error make {msg: 'finding: oxfmt found formatting differences; run `qg format ts`'}
+        format-check-failure oxfmt $result 'oxfmt found formatting differences; run `qg format ts`'
     }
 }
 
@@ -900,16 +976,23 @@ def lint-typescript-oxlint [] {
     } else {
         $paths
     }
-    run-check 'oxlint' oxlint $arguments
+    run-check 'oxlint' oxlint $arguments --engine-markers ['Failed to parse oxlint configuration']
 }
 
 def lint-typescript-typecheck [] {
     if not (node-project) { return }
-    validate-node-version
+    with-node-runtime { typescript-typecheck }
+}
+
+# tsc and vue-tsc exit with 1 or 2 when the code has type errors; any other
+# code means the compiler itself could not run.
+def typescript-typecheck [] {
     install-node-dependencies
     let manager = node-manager
-    let configs = (typescript-quality-configs)
     let framework = typescript-framework
+    let checker = if $framework in [vue nuxt] { 'vue-tsc' } else { 'tsc' }
+    let binary = local-node-bin $checker
+    let configs = (typescript-quality-configs)
     try {
         if $framework == nuxt {
             if $manager == npm {
@@ -919,19 +1002,7 @@ def lint-typescript-typecheck [] {
             }
         }
         for config in $configs {
-            if $framework in [vue nuxt] {
-                if $manager == npm {
-                    run-check 'vue-tsc' npm [exec --no -- vue-tsc --noEmit --project $config]
-                } else {
-                    run-check 'vue-tsc' pnpm [exec -- vue-tsc --noEmit --project $config]
-                }
-            } else {
-                if $manager == npm {
-                    run-check 'tsc' npm [exec --no -- tsc --noEmit --project $config]
-                } else {
-                    run-check 'tsc' pnpm [exec tsc --noEmit --project $config]
-                }
-            }
+            run-check $checker $binary [--noEmit --project $config] --finding-codes [1 2]
         }
     } finally {
         for config in $configs {
@@ -1002,51 +1073,68 @@ def typescript-quality-configs []: nothing -> list<path> {
     $sources | each {|source|
         let effective = $source.effective
         let options = ($effective.compilerOptions? | default {}) | merge $central.compilerOptions
-        let files = ($effective.files? | default [])
+        let declared = ($effective.files? | default [])
             | each {|file| typescript-project-file $source.base $file }
-        let include = if ($files | is-empty) {
-            ($effective.include? | default [])
-            | each {|pattern| typescript-project-file $source.base $pattern }
+        let files = $declared | where {|file| not (typescript-file-excluded $file) }
+        if ($declared | is-not-empty) and ($files | is-empty) {
+            null
         } else {
-            []
+            let include = if ($files | is-empty) {
+                ($effective.include? | default [])
+                | each {|pattern| typescript-project-file $source.base $pattern }
+            } else {
+                []
+            }
+            # Keep the generated config beside the original project config. TypeScript
+            # resolves relative compiler options (for example baseUrl, paths and
+            # typeRoots) relative to the config file, not relative to the cwd.
+            let config = (mktemp --tmpdir-path $source.base '.quality-gate-tsconfig.XXXXXX.json' | str trim)
+            {
+                compilerOptions: $options
+                files: $files
+                include: $include
+                exclude: []
+            } | to json | save --force $config
+            $config
         }
-        # Keep the generated config beside the original project config. TypeScript
-        # resolves relative compiler options (for example baseUrl, paths and
-        # typeRoots) relative to the config file, not relative to the cwd.
-        let config = (mktemp --tmpdir-path $source.base '.quality-gate-tsconfig.XXXXXX.json' | str trim)
-        {
-            compilerOptions: $options
-            files: $files
-            include: $include
-            exclude: []
-        } | to json | save --force $config
-        $config
+    } | compact
+}
+
+# Files listed by the expanded tsconfig are checked against .quality-gate/exclude
+# so tsc follows the same exclusions as every other tool.
+def typescript-file-excluded [file: path]: nothing -> bool {
+    let root = quality-gate-root
+    let absolute = $file | path expand
+    if not ($absolute | str starts-with $'($root)/') {
+        return false
     }
+    (git-excluded-relative [($absolute | path relative-to $root)] | is-not-empty)
 }
 
 def test-python [] {
     require-local-tests python
     sync-python
-    run-check 'uv pytest' uv [run --locked pytest]
+    run-check 'uv pytest' uv [run --locked pytest] --any-failure-is-finding
 }
 
 def test-go [] {
     require-local-tests go
-    run-check 'go test' go [test ./...]
+    run-check 'go test' go [test ./...] --any-failure-is-finding
 }
 
 def test-typescript [] {
     require-local-tests typescript
-    validate-node-version
     if not (package-has-script test) {
         error make {msg: 'TypeScript projects must define scripts.test in package.json.'}
     }
-    install-node-dependencies
-    let manager = node-manager
-    if $manager == npm {
-        run-check 'npm test' npm [run test]
-    } else {
-        run-check 'pnpm test' pnpm [run test]
+    with-node-runtime {
+        install-node-dependencies
+        let manager = node-manager
+        if $manager == npm {
+            run-check 'npm test' npm [run test] --any-failure-is-finding
+        } else {
+            run-check 'pnpm test' pnpm [run test] --any-failure-is-finding
+        }
     }
 }
 
@@ -1335,7 +1423,7 @@ Diagnostics:
 }
 
 def xml-escape [value: string]: nothing -> string {
-    $value
+    strip-terminal-codes $value
     | str replace --all '&' '&amp;'
     | str replace --all '<' '&lt;'
     | str replace --all '>' '&gt;'
@@ -1344,7 +1432,7 @@ def xml-escape [value: string]: nothing -> string {
 }
 
 def xml-cdata [value: string]: nothing -> string {
-    $value | str replace --all ']]>' ']]]]><![CDATA[>'
+    strip-terminal-codes $value | str replace --all ']]>' ']]]]><![CDATA[>'
 }
 
 def result-project [result: record, scope: string]: nothing -> string {
