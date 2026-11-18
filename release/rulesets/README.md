@@ -32,3 +32,16 @@ rulesets (an existing ruleset with the same name is updated with
 `PUT /repos/prefeitura-rio/flakes/rulesets/<id>`, never duplicated). `--verify`
 also fails while any protected secret is still stored at repository level or is
 missing from its Environment; secret values are never read or copied.
+
+## Order of application
+
+`protect-master` requires the Quality Gate checks and code-owner review, so it
+can only be applied once the workflows exist on `master`. Apply everything else
+first and leave it out:
+
+```bash
+release/rulesets/apply.sh --app-id 5818520 --apply  --skip-ruleset protect-master
+release/rulesets/apply.sh --app-id 5818520 --verify --skip-ruleset protect-master
+```
+
+After the Quality Gate is merged, run both commands again without the flag.
