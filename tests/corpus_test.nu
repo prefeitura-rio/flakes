@@ -36,6 +36,7 @@ def test-python-corpus-reports-each-violation-as-a-finding [] {
         {fixture: python-typeerror, failing: [lint:python:basedpyright]}
         {fixture: python-warning, failing: [lint:python:basedpyright]}
         {fixture: python-strlint, failing: [lint:python:strlint]}
+        {fixture: python-complexipy-override, failing: [lint:python:complexipy]}
     ]
 }
 
@@ -60,6 +61,8 @@ def test-typescript-corpus-reports-each-violation-as-a-finding [] {
         {fixture: ts-lint, failing: [lint:typescript:oxlint]}
         {fixture: ts-strlint, failing: [lint:typescript:strlint]}
         {fixture: ts-typeerror, failing: [lint:typescript:typecheck]}
+        {fixture: ts-vite-classic, failing: [lint:typescript:typecheck]}
+        {fixture: ts-vite-classic-clean, failing: []}
     ] --before-typecheck {|root| seed-node-modules $root }
 }
 

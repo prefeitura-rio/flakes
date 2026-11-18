@@ -81,6 +81,8 @@
   },
   "typescript": {
     "skip_lib_check": true,
+    "composite": false,
+    "incremental": false,
     "rules": {
       "no-debugger": "error",
       "eqeqeq": [

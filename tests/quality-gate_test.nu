@@ -797,6 +797,8 @@ def test-curated-policy-snapshot-is-current [] {
         }
         typescript: {
             skip_lib_check: $typescript.compilerOptions.skipLibCheck
+            composite: $typescript.compilerOptions.composite
+            incremental: $typescript.compilerOptions.incremental
             rules: $oxlint.rules
         }
     }
