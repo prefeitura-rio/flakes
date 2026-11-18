@@ -20,6 +20,11 @@ QUALITY_GATE_RELEASE_APP_PRIVATE_KEY
 Rotate the private key after installation. The workflows use the App only for
 release tags and emergency synchronization PRs.
 
+Configure the `quality-gate-promotion` Environment with at least two required
+reviewers (`phrmendes` and `gabriel-milan`, or the responsible team) and
+disable self-review. The person who requests an emergency operation must not
+be able to approve their own request.
+
 ## Ruleset actor
 
 Replace the placeholder bypass actor in

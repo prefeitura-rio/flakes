@@ -16,7 +16,7 @@ on:
       - "release/scripts/move-floating-tag.sh"
       - ".github/workflows/quality-gate-promotion.yml"
   schedule:
-    - cron: "17 * * * *"
+    - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
       target_tag:
@@ -56,6 +56,7 @@ jobs:
           fi
           bake_days="$(awk -F': *' '$1 == "bake_days" { print $2 }' release/channels.yaml)"
           test -n "$bake_days"
+          test "$(git cat-file -t "refs/tags/$candidate")" = tag
           git rev-parse --verify "refs/tags/$candidate^{}" >/dev/null
           created="$(git for-each-ref --format='%(creatordate:iso-strict)' "refs/tags/$candidate")"
           current_sha="$(git rev-parse --verify 'refs/tags/quality-gate-latest^{commit}' 2>/dev/null || true)"
@@ -65,7 +66,7 @@ jobs:
           fi
           now="$(date --iso-8601=seconds --utc)"
           result="$(
-            nix --extra-experimental-features 'nix-command flakes' run nixpkgs#nushell -- \
+            nix --extra-experimental-features 'nix-command flakes' run --inputs-from . nixpkgs#nushell -- \
               release/promote.nu validate "$candidate" "$current" "$created" "$now" "$bake_days"
           )"
           echo "$result" | jq .
@@ -105,6 +106,7 @@ jobs:
             exit 0
           fi
           bake_days="$(awk -F': *' '$1 == "bake_days" { print $2 }' release/channels.yaml)"
+          test "$(git cat-file -t "refs/tags/$candidate")" = tag
           git rev-parse --verify "refs/tags/$candidate^{}" >/dev/null
           created="$(git for-each-ref --format='%(creatordate:iso-strict)' "refs/tags/$candidate")"
           current_sha="$(git rev-parse --verify 'refs/tags/quality-gate-latest^{commit}' 2>/dev/null || true)"
@@ -114,7 +116,7 @@ jobs:
           fi
           now="$(date --iso-8601=seconds --utc)"
           result="$(
-            nix --extra-experimental-features 'nix-command flakes' run nixpkgs#nushell -- \
+            nix --extra-experimental-features 'nix-command flakes' run --inputs-from . nixpkgs#nushell -- \
               release/promote.nu validate "$candidate" "$current" "$created" "$now" "$bake_days"
           )"
           echo "$result" | jq .
@@ -160,6 +162,7 @@ jobs:
           git remote set-url origin "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           candidate="$TARGET_TAG_INPUT"
           bake_days="$(awk -F': *' '$1 == "bake_days" { print $2 }' release/channels.yaml)"
+          test "$(git cat-file -t "refs/tags/$candidate")" = tag
           git rev-parse --verify "refs/tags/$candidate^{}" >/dev/null
           created="$(git for-each-ref --format='%(creatordate:iso-strict)' "refs/tags/$candidate")"
           current_sha="$(git rev-parse --verify 'refs/tags/quality-gate-latest^{commit}' 2>/dev/null || true)"
@@ -169,7 +172,7 @@ jobs:
           fi
           now="$(date --iso-8601=seconds --utc)"
           result="$(
-            nix --extra-experimental-features 'nix-command flakes' run nixpkgs#nushell -- \
+            nix --extra-experimental-features 'nix-command flakes' run --inputs-from . nixpkgs#nushell -- \
               release/promote.nu validate "$candidate" "$current" "$created" "$now" "$bake_days" --force
           )"
           echo "$result" | jq .
@@ -244,6 +247,7 @@ jobs:
           fi
           if [ "$diverged" = true ]; then
             body="$(cat <<EOF
+          <!-- quality-gate-channel-divergence -->
           The declared stable channel and the mutable tag disagree.
 
           - Declared in \`release/channels.yaml\`: \`${expected:-<empty>}\`
@@ -252,14 +256,26 @@ jobs:
           - Runbook: [failed-quality-gate-release](https://github.com/${GITHUB_REPOSITORY}/blob/master/docs/runbooks/failed-quality-gate-release.md)
           EOF
             )"
+            comment_id=""
             if [ -n "$issue" ]; then
-              gh issue comment "$issue" --body "$body"
+              comment_id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${issue}/comments" \
+                --paginate --jq '.[] | select(.body | contains("<!-- quality-gate-channel-divergence -->")) | .id' | tail -n 1)"
+            fi
+            if [ -n "$comment_id" ]; then
+              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${comment_id}" -f body="$body" >/dev/null
+            elif [ -n "$issue" ]; then
+              gh issue comment "$issue" --body "$body" >/dev/null
             else
               args=(--title "$title" --body "$body" --label quality-gate-release)
               [ -n "$assignee" ] && args+=(--assignee "$assignee")
               gh issue create "${args[@]}"
             fi
           elif [ -n "$issue" ]; then
-            gh issue comment "$issue" --body "Channel divergence resolved: \`$expected\` and \`quality-gate-latest\` now point to the same commit."
+            comment_id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${issue}/comments" \
+              --paginate --jq '.[] | select(.body | contains("<!-- quality-gate-channel-divergence -->")) | .id' | tail -n 1)"
+            if [ -n "$comment_id" ]; then
+              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${comment_id}" \
+                -f body="<!-- quality-gate-channel-divergence -->"$'\n\n'"Channel divergence resolved: \`$expected\` and \`quality-gate-latest\` now point to the same commit." >/dev/null
+            fi
             gh issue close "$issue"
           fi

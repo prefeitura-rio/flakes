@@ -33,6 +33,18 @@ def test_canary_force_allows_rollback [] {
 }
 
 @test
+def test_canary_force_rejects_forward_promotion [] {
+    let result = (decide 'quality-gate-v1.1.0' 'quality-gate-v1.0.0' (date now) (date now) 3 true)
+    assert equal $result.decision reject
+}
+
+@test
+def test_canary_force_requires_existing_stable_channel [] {
+    let result = (decide 'quality-gate-v1.0.0' '' (date now) (date now) 3 true)
+    assert equal $result.decision reject
+}
+
+@test
 def test_canary_rejects_future_tags [] {
     let result = (decide 'quality-gate-v1.0.0' '' ((date now) + 1day) (date now) 3)
     assert equal $result.decision reject

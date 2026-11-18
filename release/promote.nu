@@ -26,6 +26,20 @@ export def decide [
     if $candidate == $current {
         return { decision: 'noop', reason: 'The requested version is already latest.' }
     }
+    if $force {
+        if ($current | is-empty) {
+            return {
+                decision: 'reject'
+                reason: 'Emergency mode is only valid for rolling back an existing stable channel.'
+            }
+        }
+        if not ((version-compare $candidate $current) < 0) {
+            return {
+                decision: 'reject'
+                reason: 'Emergency mode may only roll back to an older immutable release.'
+            }
+        }
+    }
     if $created > $now {
         return { decision: 'reject', reason: 'The candidate tag was created in the future.' }
     }
@@ -41,6 +55,22 @@ export def decide [
         reason: (if $force { 'Emergency promotion/rollback was explicitly requested.' } else { 'Bake time completed.' })
         candidate: $candidate
     }
+}
+
+def version-compare [left: string, right: string]: nothing -> int {
+    let left_parts = $left | str replace 'quality-gate-v' '' | split row '.' | each {|part| $part | into int}
+    let right_parts = $right | str replace 'quality-gate-v' '' | split row '.' | each {|part| $part | into int}
+    mut comparison = 0
+    for index in 0..2 {
+        if $comparison == 0 {
+            if ($left_parts | get $index) < ($right_parts | get $index) {
+                $comparison = -1
+            } else if ($left_parts | get $index) > ($right_parts | get $index) {
+                $comparison = 1
+            }
+        }
+    }
+    $comparison
 }
 
 def main [
