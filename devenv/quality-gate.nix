@@ -36,6 +36,9 @@ let
       if [ -z "$quality_gate_sha" ]; then
         if [ ! -s "$cache_file" ]; then
           echo "Quality Gate could not resolve $quality_gate_ref and has no cached revision." >&2
+          if [ "$quality_gate_ref" = quality-gate-latest ]; then
+            echo "The stable channel may not have been promoted yet; use QUALITY_GATE_REF=quality-gate-next for the canary." >&2
+          fi
           exit 3
         fi
         quality_gate_sha="$("$sed_bin" -n '1p' "$cache_file")"
@@ -83,11 +86,16 @@ let
     if [ -z "$quality_gate_run_ref" ]; then
       quality_gate_run_ref="github:prefeitura-rio/flakes/$quality_gate_sha"
     fi
-    exec ${pkgs.nix}/bin/nix --extra-experimental-features 'nix-command flakes' run "$quality_gate_run_ref#$quality_gate_app" -- "$@"
+    nix_bin="$(command -v nix || true)"
+    if [ -z "$nix_bin" ]; then
+      echo "Quality Gate requires the system Nix executable." >&2
+      exit 3
+    fi
+    exec "$nix_bin" --extra-experimental-features 'nix-command flakes' run "$quality_gate_run_ref#$quality_gate_app" -- "$@"
   '';
   qgScript = ''
     def main [...args: string] {
-      ${qualityGateRunner} qg ...$args
+      ${qualityGateRunner} ...$args
     }
   '';
 
@@ -147,7 +155,6 @@ in
 {
   profiles.quality-gate.module = {
     packages = [
-      pkgs.nix
       pkgs.nushell
     ];
 

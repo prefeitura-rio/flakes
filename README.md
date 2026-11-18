@@ -286,10 +286,11 @@ Structural lint is additive. The central ast-grep rules always run first. Then t
 
 ### Central exclusions
 
-Repositories may add `.quality-gate/exclude` at the project root. It uses
+Repositories may add one `.quality-gate/exclude` at the repository root. It uses
 one path/glob per line, with blank lines and `#` comments ignored. Exclusions
 are intended only for generated code, migrations and vendored code; they cannot
-disable an individual rule. The runner applies the paths to project discovery,
+disable an individual rule. A nested `.quality-gate/exclude` is rejected. The
+runner applies the paths to project discovery,
 Python/Ruff, TypeScript/Oxlint/Oxfmt, ast-grep, basedpyright and golangci-lint.
 Keep this file under CODEOWNERS review in consumers.
 
@@ -314,7 +315,22 @@ Every category prints a Markdown table to the terminal with one row per project,
 | `QUALITY_GATE_MODE`             | `block` (default) or time-limited `report`       |
 | `QUALITY_GATE_REPORT_UNTIL`     | required deadline for report-only mode           |
 
-The tools, including `complexipy` and Oxlint, are pinned by this repository, so a project's `devenv.lock` fixes the versions of both the tools and the rules.
+The tools, including `complexipy` and Oxlint, are pinned by this repository.
+The consumer's `devenv.lock` does not fix the Quality Gate versions or rules.
+
+Each failed check is classified in the console, Markdown and JUnit reports:
+
+- `finding`: the checked code did not satisfy the central policy (normally
+  tool exit code `1`). This is an expected apuração result for a codebase that
+  still has findings and is not evidence that the Quality Gate motor failed.
+- `engine`: the motor or its execution environment failed (for example a
+  missing tool/configuration, an unexpected command failure, or an exit code
+  other than `1`). Engine failures are release and canary-health failures.
+
+The distinction is intentionally preserved even though both categories block
+the default `QUALITY_GATE_MODE=block` execution. Consumers that analyze
+fixtures or canary sandboxes can allow only the configured `finding` results;
+an `engine` result must remain unhealthy.
 
 ### Report-only rollout
 
@@ -323,7 +339,20 @@ The default mode is blocking. A consumer may temporarily set
 `QUALITY_GATE_REPORT_UNTIL=YYYY-MM-DD`. The deadline cannot be more than 45 days
 ahead and an expired/missing deadline blocks the execution. All checks and
 reports still run, but failures are marked `REPORT-ONLY` during the valid
-window. Removing the variable returns the consumer to blocking mode.
+window. In GitLab CI, the project and exact deadline must also be present in
+the central `policy/report-only.yaml` allowlist. Removing the variable returns
+the consumer to blocking mode.
+
+The Quality Gate ships Node.js 22, 24 and 26 runtimes and selects the major
+declared by `.node-version` (or `QUALITY_GATE_NODE_VERSION`). Python execution
+uses the pinned `python3` runtime and disables interpreter downloads; projects
+whose `requires-python` is incompatible fail instead of silently selecting a
+different runtime. `GOTOOLCHAIN=local` likewise prevents Go from downloading a
+new toolchain during a check.
+
+Inline suppressions must identify the specific rule and include a justification.
+The central Ruff, golangci-lint, basedpyright and Oxlint policies reject
+blanket suppressions.
 
 ## Development
 

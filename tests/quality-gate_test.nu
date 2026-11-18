@@ -25,6 +25,7 @@ def quality-gate-environment [root: path]: nothing -> record {
         QUALITY_GATE_TYPESCRIPT_RULES: ($QUALITY_GATE_FILES | path join typescript rules)
         QUALITY_GATE_OXLINT_CONFIG: ($QUALITY_GATE_FILES | path join typescript .oxlintrc.json)
         QUALITY_GATE_OXFMT_CONFIG: ($QUALITY_GATE_FILES | path join typescript .oxfmtrc.json)
+        QUALITY_GATE_REPORT_POLICY: ($QUALITY_GATE_FILES | path join policy report-only.yaml)
     }
 }
 
@@ -67,7 +68,8 @@ def write-fake-tool [bin: path, name: string] {
         '    let failure = if ("QUALITY_GATE_FAKE_FAILURE" in $env) { $env.QUALITY_GATE_FAKE_FAILURE } else { "false" }'
         '    if ($failure == "true") {'
         "        print 'diagnostic <bad> & \"quoted\"'"
-        '        exit 1'
+        '        let exit_code = if ("QUALITY_GATE_FAKE_EXIT_CODE" in $env) { $env.QUALITY_GATE_FAKE_EXIT_CODE | into int } else { 1 }'
+        '        exit $exit_code'
         '    }'
         '}'
     ] | str join (char nl))
@@ -258,6 +260,7 @@ def test-central-exclude-uses-git-glob-semantics [] {
         }
         let cases = [
             {pattern: 'gen/client', expected: ['gen/other' 'apps/client']}
+            {pattern: 'gen/client/', expected: ['gen/other' 'apps/client']}
             {pattern: '**/client', expected: ['gen/other']}
             {pattern: 'gen/*', expected: ['apps/client']}
         ]
@@ -268,7 +271,25 @@ def test-central-exclude-uses-git-glob-semantics [] {
             for directory in $case.expected {
                 assert ($result.stderr | str contains $'Detected project ($directory): go')
             }
+            assert not ($result.stderr | str contains 'Detected project gen/client: go')
         }
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
+def test-central-exclude-is-only-allowed-at-repository-root [] {
+    let root = make-fixture
+    try {
+        ^git -C $root init --quiet
+        write-fixture-file $root services/api/go.mod "module example.com/api\n\ngo 1.23.0\n"
+        write-fixture-file $root services/api/.quality-gate/exclude "generated/\n"
+        let result = run-quality-gate $root detect
+        assert ($result.exit_code != 0)
+        assert (($result.stdout + $result.stderr) | str contains 'allowed only at the repository root')
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -284,7 +305,9 @@ def test-fix-continues-after-a-nonfixable-ruff-failure [] {
         let bin = $root | path join bin
         let log = $root | path join commands.log
         write-fixture-file $root services/one/pyproject.toml "[project]\nname = 'one'\nversion = '0.1.0'\n"
+        write-fixture-file $root services/one/app.py "value = 1\n"
         write-fixture-file $root services/two/pyproject.toml "[project]\nname = 'two'\nversion = '0.1.0'\n"
+        write-fixture-file $root services/two/app.py "value = 2\n"
         write-fake-tool $bin ruff
         let result = run-quality-gate-with-env $root {
             PATH: ($env.PATH | prepend $bin)
@@ -306,7 +329,7 @@ def test-typescript-typecheck-requires-a-lockfile [] {
     try {
         write-fixture-file $root package.json "{\n  \"name\": \"fixture\",\n  \"private\": true\n}\n"
         write-fixture-file $root tsconfig.json "{\n  \"compilerOptions\": {\n    \"strict\": true\n  }\n}\n"
-        write-fixture-file $root .node-version "22\n"
+        write-fixture-file $root .node-version "26\n"
         let result = run-quality-gate $root typecheck typescript
         assert ($result.exit_code != 0)
         assert (($result.stdout + $result.stderr) | str contains 'No lockfile found')
@@ -340,7 +363,7 @@ def test-pnpm-typecheck-requires-a-versioned-package-manager [] {
         write-fixture-file $root package.json '{"name":"fixture","private":true}'
         write-fixture-file $root pnpm-lock.yaml "lockfileVersion: 9.0\n"
         write-fixture-file $root tsconfig.json '{"compilerOptions":{"strict":true}}'
-        write-fixture-file $root .node-version "22\n"
+        write-fixture-file $root .node-version "26\n"
         let result = run-quality-gate $root typecheck typescript
         assert ($result.exit_code != 0)
         assert (($result.stdout + $result.stderr) | str contains 'requires package.json packageManager')
@@ -446,6 +469,31 @@ def test-report-mode-reports-failures-without-blocking [] {
         assert ((open --raw $summary) | str contains 'Mode: `report-only`')
         assert ((open --raw $summary) | str contains 'Exclusions: generated/')
         assert ((open --raw $summary) | str contains 'REPORT-ONLY')
+        assert ((open --raw $summary) | str contains 'Category: `finding`')
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
+def test-engine-failures_are_distinguished_from_findings [] {
+    let root = make-fixture
+    try {
+        let bin = $root | path join bin
+        let summary = $root | path join summary.md
+        write-fixture-file $root go.mod "module example.com/fixture\n\ngo 1.23.0\n"
+        write-fake-tool $bin golangci-lint
+        write-fake-tool $bin go
+        let result = run-quality-gate-with-env $root {
+            PATH: ($env.PATH | prepend $bin)
+            QUALITY_GATE_FAKE_FAILURE: "true"
+            QUALITY_GATE_FAKE_EXIT_CODE: "3"
+            QUALITY_GATE_SUMMARY_FILE: $summary
+        } category lint
+        assert ($result.exit_code != 0)
+        assert ((open --raw $summary) | str contains 'Category: `engine`')
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -475,6 +523,26 @@ def test-report-mode-requires-a-valid-deadline [] {
             let result = run-quality-gate-with-env $root $environment category lint
             assert ($result.exit_code != 0)
         }
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
+def test-report-mode-requires-central-ci-allowlist [] {
+    let root = make-fixture
+    try {
+        write-fixture-file $root go.mod "module example.com/fixture\n\ngo 1.23.0\n"
+        let report_until = ((date now) + 30day | format date '%Y-%m-%d')
+        let result = run-quality-gate-with-env $root {
+            CI_PROJECT_PATH: "iplanrio/not-approved"
+            QUALITY_GATE_MODE: "report"
+            QUALITY_GATE_REPORT_UNTIL: $report_until
+        } category lint
+        assert ($result.exit_code != 0)
+        assert (($result.stdout + $result.stderr) | str contains 'not approved for report-only')
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -568,7 +636,7 @@ def test-local-ast-grep-rules-are-run-after-central-rules [] {
         assert equal $result.exit_code 0
         let commands = open --raw $log | lines
         assert equal ($commands | length) 2
-        assert equal ($commands | get 1) 'scan --config .quality-gate/sgconfig.yaml'
+        assert (($commands | get 1) | str contains 'scan --config .quality-gate/sgconfig.yaml')
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -637,6 +705,7 @@ def test-curated-policy-snapshot-is-current [] {
             ruff_select: $ruff.lint.select
             ruff_ignore: ($ruff.lint.ignore? | default [])
             basedpyright_mode: $pyright.typeCheckingMode
+            basedpyright_ignore_comment_without_rule: $pyright.reportIgnoreCommentWithoutRule
         }
         go: {
             linters_enable: $golangci.linters.enable
@@ -716,7 +785,28 @@ def test-python-app-runs-real-lint-checks [] {
         } lint python basedpyright
         assert equal $basedpyright.exit_code 0
         let command = open --raw $log
-        assert ($command | str contains $'--pythonpath (($root | path join .venv bin python))')
+        assert ($command | str contains '--project')
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
+def test-python-app-runs-real-format-check [] {
+    let root = make-fixture
+    try {
+        write-fixture-file $root pyproject.toml "[project]\nname = 'fixture'\nversion = '0.1.0'\nrequires-python = '>=3.13'\ndependencies = []\n"
+        write-fixture-file $root app.py "def add(left: int, right: int) -> int:\n    return left + right\n"
+        let lock = with-env {} {
+            cd $root
+            ^uv lock | complete
+        }
+        assert equal $lock.exit_code 0
+        let result = run-quality-gate-app $root quality-gate-python category format
+        assert equal $result.exit_code 0
+        assert ($result.stdout | str contains 'format:python:ruff')
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -825,7 +915,7 @@ def test-typescript-solution-references-preserve-project-options [] {
         let bin = $root | path join bin
         write-fixture-file $root package.json "{\n  \"name\": \"fixture\",\n  \"private\": true\n}\n"
         write-fixture-file $root package-lock.json "{\n  \"name\": \"fixture\",\n  \"version\": \"1.0.0\",\n  \"lockfileVersion\": 3,\n  \"requires\": true,\n  \"packages\": {\n    \"\": {\n      \"name\": \"fixture\",\n      \"version\": \"1.0.0\"\n    }\n  }\n}\n"
-        write-fixture-file $root .node-version "22\n"
+        write-fixture-file $root .node-version "26\n"
         write-fixture-file $root tsconfig.json "{\n  \"files\": [],\n  \"references\": [{\"path\": \"./tsconfig.app.json\"}]\n}\n"
         write-fixture-file $root tsconfig.app.json "{\n  \"compilerOptions\": {\n    \"jsx\": \"react-jsx\",\n    \"target\": \"ES2022\",\n    \"module\": \"ESNext\"\n  },\n  \"include\": [\"src\"]\n}\n"
         write-fixture-file $root src/main.tsx "export const value = <div />;\n"

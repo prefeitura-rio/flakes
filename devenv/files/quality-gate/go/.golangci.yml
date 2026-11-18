@@ -26,6 +26,7 @@ linters:
     - misspell
     - whitespace
     - gosec
+    - nolintlint
 
   settings:
     errcheck:
@@ -182,6 +183,10 @@ linters:
         - SA9006
         - SA9007
         - SA9008
+
+    nolintlint:
+      require-specific: true
+      require-explanation: true
 
   exclusions:
     generated: lax

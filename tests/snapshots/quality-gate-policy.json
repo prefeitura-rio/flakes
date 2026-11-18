@@ -28,6 +28,8 @@
       "PLR0912",
       "PLR0913",
       "PLR2004",
+      "PGH003",
+      "PGH004",
       "Q000",
       "RET504",
       "RET505",
@@ -52,7 +54,8 @@
       "W293"
     ],
     "ruff_ignore": [],
-    "basedpyright_mode": "recommended"
+    "basedpyright_mode": "recommended",
+    "basedpyright_ignore_comment_without_rule": "error"
   },
   "go": {
     "linters_enable": [
@@ -70,7 +73,8 @@
       "unparam",
       "misspell",
       "whitespace",
-      "gosec"
+      "gosec",
+      "nolintlint"
     ],
     "gocritic_settings_sha256": "e966bf145c1a5bd4e3ae8c127cd7bcd27f395a6108559aef1a2bcc25955bfddd",
     "staticcheck_settings_sha256": "db9c59c10cbe13871e6dfac77b9988eca4629113b9fd2daf3bc378cbb842810f"
@@ -79,7 +83,10 @@
     "skip_lib_check": true,
     "rules": {
       "no-debugger": "error",
-      "eqeqeq": ["error", "always"],
+      "eqeqeq": [
+        "error",
+        "always"
+      ],
       "no-var": "error",
       "prefer-const": "error",
       "typescript/no-explicit-any": "error",
@@ -89,7 +96,17 @@
       "react/no-array-index-key": "error",
       "jsx-a11y/alt-text": "error",
       "jsx-a11y/click-events-have-key-events": "error",
-      "jsx-a11y/no-static-element-interactions": "error"
+      "jsx-a11y/no-static-element-interactions": "error",
+      "typescript/ban-ts-comment": [
+        "error",
+        {
+          "ts-expect-error": "allow-with-description",
+          "ts-ignore": "allow-with-description",
+          "ts-nocheck": "allow-with-description",
+          "ts-check": "allow-with-description",
+          "minimumDescriptionLength": 10
+        }
+      ]
     }
   }
 }

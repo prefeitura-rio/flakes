@@ -10,9 +10,21 @@ const IGNORED_DIRECTORY_NAMES = [
 const IGNORED_TEST_PATH_NAMES = [
     .git node_modules vendor .venv __pycache__ .cache dist build out .next .nuxt coverage
 ]
+const PYRIGHT_DEFAULT_EXCLUDES = [
+    '**/.git'
+    '**/node_modules'
+    '**/__pycache__'
+    '**/.venv'
+    '**/dist'
+    '**/build'
+]
 
 def project []: nothing -> path {
     $env.QUALITY_GATE_PROJECT_DIR? | default '.' | path expand
+}
+
+def quality-gate-root []: nothing -> path {
+    $env.QUALITY_GATE_ROOT? | default ($env.QUALITY_GATE_PROJECT_DIR? | default '.') | path expand
 }
 
 def has-project-file [files: list<string>]: nothing -> bool {
@@ -191,6 +203,19 @@ def report-only []: nothing -> bool {
     if $deadline > ($now + 45day) {
         error make {msg: 'QUALITY_GATE_REPORT_UNTIL cannot be more than 45 days in the future.'}
     }
+    let ci_project = $env.CI_PROJECT_PATH? | default ''
+    if ($ci_project | is-not-empty) {
+        let policy_file = $env.QUALITY_GATE_REPORT_POLICY? | default ''
+        if ($policy_file | is-empty) or not ($policy_file | path exists) {
+            error make {msg: 'Report-only mode is not allowed in CI without the central policy file.'}
+        }
+        let policy = open $policy_file
+        let approved = ($policy.projects? | default [])
+            | where {|entry| $entry.project == $ci_project and $entry.until == $until }
+        if ($approved | is-empty) {
+            error make {msg: $'Project ($ci_project) is not approved for report-only mode until ($until).'}
+        }
+    }
     true
 }
 
@@ -220,7 +245,10 @@ def run-check [name: string, command: string, arguments: list<string>] {
         record-output $output
     }
     if $result.exit_code != 0 {
-        error make {msg: $'($name) failed with exit code ($result.exit_code)'}
+        let category = if $result.exit_code == 1 { 'finding' } else { 'engine' }
+        error make {
+            msg: $'($category): ($name) failed with exit code ($result.exit_code)'
+        }
     }
 }
 
@@ -232,7 +260,7 @@ def warn-local-quality-config [files: list<string>] {
 }
 
 def quality-gate-exclude-patterns []: nothing -> list<string> {
-    let file = project | path join .quality-gate exclude
+    let file = quality-gate-root | path join .quality-gate exclude
     if not ($file | path exists) {
         return []
     }
@@ -304,8 +332,16 @@ def validate-quality-gate-exclusions []: nothing -> nothing {
         error make {msg: $'Invalid .quality-gate/exclude pattern(s): (($broad | str join ", ")). Broad patterns cannot disable the Quality Gate.'}
     }
 
-    let scope = project
+    let scope = quality-gate-root
     let files = git-repository-files $scope
+    let root_exclude = $scope | path join .quality-gate exclude | path expand
+    let nested = $files
+        | where {|file| $file != $root_exclude }
+        | where {|file| ($file | path relative-to $scope | path split) | any {|part| $part == '.quality-gate' }}
+        | where {|file| ($file | path basename) == 'exclude' }
+    if ($nested | is-not-empty) {
+        error make {msg: 'The .quality-gate/exclude file is allowed only at the repository root.'}
+    }
     if ($files | is-empty) or ($patterns | is-empty) {
         return
     }
@@ -325,26 +361,29 @@ def validate-quality-gate-exclusions []: nothing -> nothing {
 }
 
 def quality-gate-path-excluded [candidate: path]: nothing -> bool {
-    let relative = $candidate | path relative-to (project)
-    (git-excluded-relative [$relative] | is-not-empty)
+    let relative = $candidate | path relative-to (quality-gate-root)
+    (git-excluded-relative [$relative $'($relative)/'] | is-not-empty)
 }
 
 def quality-gate-files [extensions: list<string>]: nothing -> list<string> {
     let scope = project
+    let root = quality-gate-root
     let tracked = git-repository-files $scope
     let files = if ($tracked | is-empty) {
         glob --no-dir ($'($scope)/**/*')
+            | where {|file| not (ignored-project-path ($file | path dirname) $scope) }
     } else {
         $tracked
     }
-    let excluded = git-excluded-relative ($files | each {|file| $file | path relative-to $scope })
+    let excluded = git-excluded-relative ($files | each {|file| $file | path relative-to $root })
+        | each {|file| $root | path join $file | path expand }
     $files
     | where {|file|
         let extension = (($file | path parse).extension? | default '' | str lowercase)
         $extension in $extensions
     }
-    | each {|file| $file | path relative-to $scope }
     | where {|file| $file not-in $excluded }
+    | each {|file| $file | path relative-to $scope }
 }
 
 def exclusion-arguments [flag: string]: nothing -> list<string> {
@@ -367,7 +406,7 @@ def sync-python []: nothing -> nothing {
     if $current == $fingerprint {
         log info 'uv dependencies are up to date; skipping uv sync.'
     } else {
-        run-check 'uv sync' uv [sync --frozen --all-groups]
+        run-check 'uv sync' uv [sync --locked --all-groups]
         mkdir .venv
         $fingerprint | save --force $marker
     }
@@ -399,8 +438,7 @@ def format-python [] {
         log warning 'No Python source files remain after .quality-gate/exclude; skipping format.'
         return
     }
-    let arguments = [format --check --config $env.QUALITY_GATE_RUFF_CONFIG]
-        ++ $files
+    let arguments = ([format --check --config $env.QUALITY_GATE_RUFF_CONFIG] ++ $files)
     let result = capture ruff $arguments
     if $result.exit_code == 0 {
         print 'ruff format: all files are correctly formatted.'
@@ -429,11 +467,34 @@ def lint-python [] {
 
 def lint-python-complexipy [] {
     if not (python-project) { return }
-    if (quality-gate-files [py pyi] | is-empty) {
+    let files = quality-gate-files [py pyi]
+    if ($files | is-empty) {
         log warning 'No Python source files remain after .quality-gate/exclude; skipping complexity.'
         return
     }
-    run-check 'complexipy' complexipy [.]
+    if (
+        ('.complexipy.toml' | path exists)
+        or ('complexipy.toml' | path exists)
+        or ((open --raw pyproject.toml | str contains '[tool.complexipy]'))
+    ) {
+        log warning 'Ignoring local complexipy configuration; the central Quality Gate policy is mandatory.'
+    }
+    let temporary = (mktemp --directory | str trim)
+    try {
+        [
+            'paths = []'
+            'max-complexity-allowed = 15'
+            'ignore-complexity = false'
+            'no-ignore = false'
+        ] | str join (char nl) | $in + (char nl) | save --force ($temporary | path join complexipy.toml)
+        let absolute = $files
+            | each {|file| (project | path join $file) | path expand | into string }
+        cd $temporary
+        run-check 'complexipy' complexipy ($absolute ++ [--max-complexity-allowed '15'])
+    } finally {
+        cd (project)
+        rm --recursive --force $temporary
+    }
 }
 
 def lint-python-basedpyright [] {
@@ -442,12 +503,6 @@ def lint-python-basedpyright [] {
     warn-local-quality-config ['pyrightconfig.json']
     let config = (python-quality-config)
     let arguments = [--project $config]
-    let python = (project | path join .venv bin python)
-    let arguments = if ($python | path exists) {
-        $arguments ++ [--pythonpath $python]
-    } else {
-        $arguments
-    }
     try {
         run-check 'basedpyright' basedpyright ($arguments ++ [.])
     } finally {
@@ -458,14 +513,18 @@ def lint-python-basedpyright [] {
 def python-quality-config []: nothing -> path {
     let central = open $env.QUALITY_GATE_PYRIGHT_CONFIG
     let scope = project
+    let root = quality-gate-root
     let files = git-repository-files $scope
     let excludes = git-excluded-relative (
-        $files | each {|file| $file | path relative-to $scope }
-    ) | each {|file| $scope | path join $file | path expand }
+        $files | each {|file| $file | path relative-to $root }
+    ) | each {|file| $root | path join $file | path expand }
+        | each {|file| $file | path relative-to $scope }
     let config = project | path join '.quality-gate-pyrightconfig.json'
     rm --force $config
     $central
-    | upsert exclude $excludes
+    | upsert venvPath '.'
+    | upsert venv '.venv'
+    | upsert exclude (($PYRIGHT_DEFAULT_EXCLUDES ++ $excludes) | uniq)
     | to json
     | save --force $config
     $config
@@ -473,21 +532,10 @@ def python-quality-config []: nothing -> path {
 
 def ast-grep-config [rules: path, language: string]: nothing -> path {
     let config = (mktemp | str trim)
-    let scope = project
-    let files = git-repository-files $scope
-    let ignores = git-excluded-relative (
-        $files | each {|file| $file | path relative-to $scope }
-    )
-    let ignore_lines = if ($ignores | is-empty) {
-        []
-    } else {
-        ['ignores:'] ++ ($ignores | each {|pattern| $'  - ($pattern)'})
-    }
     let content = if $language == typescript {
         [
             'ruleDirs:'
             $'  - ($rules)'
-            ...$ignore_lines
             'languageGlobs:'
             '  typescript:'
             '    - "*.ts"'
@@ -519,12 +567,28 @@ def ast-grep-config [rules: path, language: string]: nothing -> path {
             '    injected: [javascript, typescript]'
         ] | str join (char nl) | $in + (char nl)
     } else {
-        (['ruleDirs:' $'  - ($rules)'] ++ $ignore_lines)
+        (['ruleDirs:' $'  - ($rules)'])
         | str join (char nl)
         | $in + (char nl)
     }
     $content | save --force $config
     $config
+}
+
+def ast-grep-exclusion-arguments []: nothing -> list<string> {
+    let root = quality-gate-root
+    let scope = project
+    let files = git-repository-files $scope
+    let excluded = git-excluded-relative (
+        $files | each {|file| $file | path relative-to $root }
+    )
+    $excluded
+    | each {|file|
+        let absolute = $root | path join $file | path expand
+        let relative = $absolute | path relative-to $scope
+        ['--globs' $'!($relative)']
+    }
+    | flatten
 }
 
 def local-ast-grep-config []: nothing -> oneof<record, nothing> {
@@ -545,7 +609,9 @@ def local-ast-grep-config []: nothing -> oneof<record, nothing> {
 def lint-strlint [language: string, rules: path] {
     let central = ast-grep-config $rules $language
     try {
-        run-check $'($language) organizational ast-grep rules' ast-grep [scan --config $central]
+        run-check $'($language) organizational ast-grep rules' ast-grep (
+            [scan --config $central .] ++ (ast-grep-exclusion-arguments)
+        )
     } finally {
         rm $central
     }
@@ -555,7 +621,9 @@ def lint-strlint [language: string, rules: path] {
         log info 'No repository-local ast-grep rules found; skipping.'
     } else {
         try {
-            run-check $'($language) repository ast-grep rules' ast-grep [scan --config $local.path]
+            run-check $'($language) repository ast-grep rules' ast-grep (
+                [scan --config $local.path .] ++ (ast-grep-exclusion-arguments)
+            )
         } finally {
             if $local.temporary {
                 rm $local.path
@@ -629,10 +697,12 @@ def lint-go-golangci [] {
 def go-quality-config []: nothing -> path {
     let central = open $env.QUALITY_GATE_GO_CONFIG
     let scope = project
+    let root = quality-gate-root
     let files = git-repository-files $scope
     let paths = git-excluded-relative (
-        $files | each {|file| $file | path relative-to $scope }
-    ) | each {|path| $path | str replace --all '.' '\.' }
+        $files | each {|file| $file | path relative-to $root }
+    ) | each {|path| $root | path join $path | path expand | path relative-to $scope }
+        | each {|path| $path | str replace --all '.' '\.' }
     let exclusions = $central.linters.exclusions | upsert paths (
         (($central.linters.exclusions.paths? | default []) ++ $paths) | uniq
     )
@@ -731,8 +801,22 @@ def install-node-dependencies []: nothing -> nothing {
 
 def validate-node-version []: nothing -> nothing {
     let configured = ($env.QUALITY_GATE_NODE_VERSION? | default '')
-    if not ('.node-version' | path exists) and ($configured | is-empty) {
+    let declared = if ('.node-version' | path exists) {
+        open --raw .node-version | str trim
+    } else {
+        $configured | str trim
+    }
+    if ($declared | is-empty) {
         error make {msg: 'Missing .node-version for TypeScript typecheck. Add the Node.js major version used by the project.'}
+    }
+    let expected = $declared | str replace --regex '^v' '' | split row '.' | first
+    let actual_result = capture node [--version]
+    if $actual_result.exit_code != 0 {
+        error make {msg: 'The Quality Gate could not determine the Node.js runtime version.'}
+    }
+    let actual = $actual_result.stdout | str trim | str replace --regex '^v' '' | split row '.' | first
+    if $expected != $actual {
+        error make {msg: $'Project declares Node.js major ($expected), but the Quality Gate runtime provides ($actual).'}
     }
 }
 
@@ -807,10 +891,7 @@ def lint-typescript-oxlint [] {
         log warning 'No TypeScript source files remain after .quality-gate/exclude; skipping lint.'
         return
     }
-    let paths = (
-        [--config $env.QUALITY_GATE_OXLINT_CONFIG]
-        ++ $source_files
-    )
+    let paths = ([--config $env.QUALITY_GATE_OXLINT_CONFIG] ++ $source_files)
     let framework = typescript-framework
     let arguments = if $framework == next {
         [--react-plugin --jsx-a11y-plugin --nextjs-plugin --ignore-pattern '.next/**' --ignore-pattern 'out/**'] ++ $paths
@@ -840,13 +921,13 @@ def lint-typescript-typecheck [] {
         for config in $configs {
             if $framework in [vue nuxt] {
                 if $manager == npm {
-                    run-check 'vue-tsc' npm [exec -- vue-tsc --noEmit --project $config]
+                    run-check 'vue-tsc' npm [exec --no -- vue-tsc --noEmit --project $config]
                 } else {
-                    run-check 'vue-tsc' pnpm [exec vue-tsc --noEmit --project $config]
+                    run-check 'vue-tsc' pnpm [exec -- vue-tsc --noEmit --project $config]
                 }
             } else {
                 if $manager == npm {
-                    run-check 'tsc' npm [exec -- tsc --noEmit --project $config]
+                    run-check 'tsc' npm [exec --no -- tsc --noEmit --project $config]
                 } else {
                     run-check 'tsc' pnpm [exec tsc --noEmit --project $config]
                 }
@@ -879,22 +960,43 @@ def typescript-project-file [base: path, file: string]: nothing -> path {
     }
 }
 
+def typescript-reference-sources [config: path]: nothing -> list<record> {
+    let effective = typescript-show-config $config
+    let source = {
+        base: ($config | path dirname)
+        config: $config
+        effective: $effective
+    }
+    let references = ($effective.references? | default [])
+        | each {|reference|
+            typescript-project-file ($config | path dirname) $reference.path
+        }
+    [$source] ++ ($references | each {|reference| typescript-reference-sources $reference } | flatten)
+}
+
 def typescript-quality-configs []: nothing -> list<path> {
     let central = (open $env.QUALITY_GATE_TYPESCRIPT_CONFIG)
     let root_config = $env.PWD | path join 'tsconfig.json' | path expand
     let root = (typescript-show-config $root_config)
     let references = ($root.references? | default [])
-    let sources = if ($references | is-empty) {
-        [{ base: ($root_config | path dirname), config: $root_config, effective: $root }]
-    } else {
-        $references | each {|reference|
-            let config = typescript-project-file ($root_config | path dirname) $reference.path
-            {
-                base: ($config | path dirname)
-                config: $config
-                effective: (typescript-show-config $config)
-            }
+    let root_source = {
+        base: ($root_config | path dirname)
+        config: $root_config
+        effective: $root
+    }
+    let referenced_sources = $references
+        | each {|reference|
+            typescript-reference-sources (
+                typescript-project-file ($root_config | path dirname) $reference.path
+            )
         }
+        | flatten
+    let sources = if ($references | is-empty) {
+        [$root_source]
+    } else if (($root.files? | default [] | is-not-empty) or ($root.include? | default [] | is-not-empty)) {
+        [$root_source] ++ $referenced_sources
+    } else {
+        $referenced_sources
     }
 
     $sources | each {|source|
@@ -925,7 +1027,7 @@ def typescript-quality-configs []: nothing -> list<path> {
 def test-python [] {
     require-local-tests python
     sync-python
-    run-check 'uv pytest' uv [run pytest]
+    run-check 'uv pytest' uv [run --locked pytest]
 }
 
 def test-go [] {
@@ -1094,15 +1196,36 @@ def fix-language [language: string] {
         cd $directory
         match $normalized {
             python => {
-                run-fix-check 'ruff format' ruff [format --config $env.QUALITY_GATE_RUFF_CONFIG .]
-                run-fix-check 'ruff check --fix' ruff [check --config $env.QUALITY_GATE_RUFF_CONFIG --fix .]
+                let files = quality-gate-files [py pyi]
+                if ($files | is-empty) {
+                    log warning 'No Python source files remain after .quality-gate/exclude; skipping fixes.'
+                } else {
+                    run-fix-check 'ruff format' ruff (
+                        [format --config $env.QUALITY_GATE_RUFF_CONFIG] ++ $files
+                    )
+                    run-fix-check 'ruff check --fix' ruff (
+                        [check --config $env.QUALITY_GATE_RUFF_CONFIG --fix] ++ $files
+                    )
+                }
             }
             go => {
-                run-fix-check 'gofumpt' gofumpt [-w .]
-                run-fix-check 'goimports' goimports [-w .]
+                let files = quality-gate-files [go]
+                if ($files | is-empty) {
+                    log warning 'No Go source files remain after .quality-gate/exclude; skipping fixes.'
+                } else {
+                    run-fix-check 'gofumpt' gofumpt ([-w] ++ $files)
+                    run-fix-check 'goimports' goimports ([-w] ++ $files)
+                }
             }
             typescript => {
-                run-fix-check 'oxfmt' oxfmt [--config $env.QUALITY_GATE_OXFMT_CONFIG --write .]
+                let files = quality-gate-files [ts tsx mts cts vue]
+                if ($files | is-empty) {
+                    log warning 'No TypeScript source files remain after .quality-gate/exclude; skipping fixes.'
+                } else {
+                    run-fix-check 'oxfmt' oxfmt (
+                        [--config $env.QUALITY_GATE_OXFMT_CONFIG --write] ++ $files
+                    )
+                }
             }
         }
         cd $scope
@@ -1130,6 +1253,9 @@ def report-language-checks [title: string, language: string, commands: list<list
 }
 
 def run-language-category [category: string, language: string] {
+    if $category not-in [format lint strlint typecheck test] {
+        error make {msg: $'Unknown quality-gate category: ($category)'}
+    }
     let normalized = normalize-language $language
     report-language-checks ($'($normalized) ($category)') $normalized (checks-for-category $category $normalized)
 }
@@ -1160,19 +1286,30 @@ def check-fix [verb: string, language: string, check: string]: nothing -> string
 }
 
 def run-project-check [directory: string, language: string, verb: string, check: string]: nothing -> record {
+    let scope = quality-gate-root
     let output_file = (mktemp | str trim)
     let result = try {
         with-env {
             QUALITY_GATE_PROJECT_DIR: $directory
+            QUALITY_GATE_ROOT: $scope
             QUALITY_GATE_CHECK_OUTPUT: $output_file
         } {
             run-command $verb $language $check
         }
-        { status: 'success', error: '' }
+        { status: 'success', category: 'none', error: '' }
     } catch {|err|
+        let message = ($err.msg? | default ($err | to text))
+        let category = if ($message | str starts-with 'finding:') {
+            'finding'
+        } else if ($message | str starts-with 'engine:') {
+            'engine'
+        } else {
+            'engine'
+        }
         {
             status: 'failure'
-            error: ($err.msg? | default ($err | to text))
+            category: $category
+            error: $message
         }
     }
     let diagnostics = if ($output_file | path exists) { open --raw $output_file | str trim } else { '' }
@@ -1191,6 +1328,7 @@ Diagnostics:
         language: $language
         check: $'($verb):($language):($check)'
         status: $result.status
+        category: $result.category
         error: $error
         fix: (check-fix $verb $language $check)
     }
@@ -1225,11 +1363,11 @@ def print-console-summary [title: string, scope: string, results: list<record>] 
     let exclusions = quality-gate-exclude-patterns
     print $'Exclusions: (if ($exclusions | is-empty) { "none" } else { $exclusions | str join ", " })'
     print ''
-    print '| Project | Language | Check | Outcome |'
-    print '| --- | --- | --- | --- |'
+    print '| Project | Language | Check | Category | Outcome |'
+    print '| --- | --- | --- | --- | --- |'
     for result in $results {
         let outcome = if $result.status == success { '✅ PASS' } else { '❌ FAIL' }
-        print $'| `((result-project $result $scope))` | `($result.language)` | `($result.check)` | ($outcome) |'
+        print $'| `((result-project $result $scope))` | `($result.language)` | `($result.check)` | `($result.category)` | ($outcome) |'
     }
     print ''
     if ($failures | is-empty) {
@@ -1240,6 +1378,7 @@ def print-console-summary [title: string, scope: string, results: list<record>] 
         print 'Failure details:'
         for failure in $failures {
             print $'### `($failure.project)` / ($failure.language) / ($failure.check)'
+            print $'Category: `($failure.category)`'
             print $failure.error
             print $'How to fix: ($failure.fix)'
             print ''
@@ -1255,7 +1394,7 @@ def write-summary [title: string, scope: string, results: list<record>] {
     let rows = $results | each {|result|
         let display_project = result-project $result $scope
         let outcome = if $result.status == 'success' { '✅ success' } else { '❌ failure' }
-        $'| `($display_project)` | `($result.language)` | `($result.check)` | ($outcome) |'
+        $'| `($display_project)` | `($result.language)` | `($result.check)` | `($result.category)` | ($outcome) |'
     }
     let failures = $results | where status == failure
     let details = if ($failures | is-empty) {
@@ -1265,6 +1404,7 @@ def write-summary [title: string, scope: string, results: list<record>] {
             let display_project = result-project $failure $scope
             $'### `($display_project)` / ($failure.language) / `($failure.check)`
 
+Category: `($failure.category)`
 Failure:
 
 ```text
@@ -1289,8 +1429,8 @@ How to fix it:
         $'Exclusions: (if ((quality-gate-exclude-patterns) | is-empty) { "none" } else { (quality-gate-exclude-patterns | str join ", ") })'
         (if (report-only) { '> REPORT-ONLY: failures are reported but do not block this execution.' } else { '' })
         ''
-        '| Project | Language | Check | Outcome |'
-        '| --- | --- | --- | --- |'
+        '| Project | Language | Check | Category | Outcome |'
+        '| --- | --- | --- | --- | --- |'
         ($rows | str join (char nl))
         ''
         '## Failure details'
@@ -1312,8 +1452,11 @@ def write-junit [title: string, scope: string, results: list<record>] {
         if $result.status == success {
             $'    <testcase classname="(xml-escape $classname)" name="(xml-escape $name)" />'
         } else {
-            let message = xml-escape $result.error
-            let raw_message = xml-cdata $result.error
+            let categorized_error = $'Category: ($result.category)
+
+($result.error)'
+            let message = xml-escape $categorized_error
+            let raw_message = xml-cdata $categorized_error
             let raw_fix = xml-cdata $result.fix
             $'    <testcase classname="(xml-escape $classname)" name="(xml-escape $name)">
       <failure message="($message)"><![CDATA[($raw_message)
@@ -1364,6 +1507,9 @@ def run-category-checks [category: string]: nothing -> record {
 }
 
 def run-category [category: string] {
+    if $category not-in [format lint strlint typecheck] {
+        error make {msg: $'Unknown quality-gate category: ($category)'}
+    }
     let run = run-category-checks $category
     let title = ($category | str capitalize)
     print-console-summary $title $run.scope $run.results
@@ -1509,6 +1655,10 @@ def main [verb?: string, language?: string, check?: string] {
             print 'Usage: quality-gate.nu category <format|lint|strlint|typecheck>'
             exit 2
         }
+        if $language not-in [format lint strlint typecheck] {
+            print 'Usage: quality-gate.nu category <format|lint|strlint|typecheck>'
+            exit 2
+        }
         run-category $language
         return
     }
@@ -1536,6 +1686,10 @@ def main [verb?: string, language?: string, check?: string] {
         let category = if $verb == tests { 'test' } else { $verb }
         run-language-category $category $language
         return
+    }
+    if $verb not-in [format lint strlint typecheck test tests] {
+        print 'Usage: quality-gate.nu ci | detect | category <format|lint|strlint|typecheck> | test | <format|lint|strlint|typecheck|tests> <py|python|go|ts|typescript>'
+        exit 2
     }
     if $verb == null or $language == null or $check == null {
         print 'Usage: quality-gate.nu ci | detect | category <format|lint|strlint|typecheck> | test | <format|lint> <python|go|typescript> <check> | <format|lint|strlint|typecheck|tests> <py|python|go|ts|typescript>'

@@ -2,13 +2,12 @@ id: no-eval
 language: Python
 severity: error
 message: >
-  Avoid eval(), exec(), and compile(). They execute arbitrary strings as code
-  and are a security risk. Use json.loads(), ast.literal_eval(), or a
-  purpose-built parser instead.
+  Avoid eval() and compile(). They execute arbitrary strings as code and are a
+  security risk. Use json.loads(), ast.literal_eval(), or a purpose-built
+  parser instead. Python exec() is covered by Ruff S102.
 rule:
   any:
     - pattern: eval($$$ARGS)
-    - pattern: exec($$$ARGS)
     - pattern: compile($$$ARGS)
 ignores:
   - "tests/**"

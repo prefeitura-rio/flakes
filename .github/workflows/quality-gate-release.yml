@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   quality-gate-change:
-    if: github.event.workflow_run.event == 'push'
+    if: github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -30,7 +30,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
       - name: Install Nix
-        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
       - name: Use devenv binary cache
         uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
@@ -76,7 +76,7 @@ jobs:
 
   release:
     needs: quality-gate-change
-    if: ${{ github.event.workflow_run.event == 'push' && needs.quality-gate-change.outputs.changed == 'true' }}
+    if: ${{ github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success' && needs.quality-gate-change.outputs.changed == 'true' }}
     permissions:
       actions: read
       contents: write
