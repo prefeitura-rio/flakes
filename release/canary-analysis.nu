@@ -28,7 +28,7 @@ def classify-testcase [job: record, testcase: record]: nothing -> record {
     let name = check-name $raw_name
     let failures = $testcase.content? | default [] | where tag == failure
     if ($failures | is-empty) {
-        { name: $name, job: $job.name, status: 'success', category: 'none', reason: '' }
+        { name: $name, qualified: $raw_name, job: $job.name, status: 'success', category: 'none', reason: '' }
     } else {
         let message = $failures | first | get attributes.message? | default ''
         let category = if ($message | str contains 'Category: finding') {
@@ -36,7 +36,7 @@ def classify-testcase [job: record, testcase: record]: nothing -> record {
         } else {
             'engine'
         }
-        { name: $name, job: $job.name, status: $job.status, category: $category, reason: $message }
+        { name: $name, qualified: $raw_name, job: $job.name, status: $job.status, category: $category, reason: $message }
     }
 }
 
@@ -44,18 +44,24 @@ export def classify-job [job: record]: nothing -> list<record> {
     let status = $job.status
     let junit = $job.junit? | default ''
     if $status in [skipped, manual] {
-        [{ name: $job.name, job: $job.name, status: $status, category: 'none', reason: '' }]
+        [{ name: $job.name, qualified: $job.name, job: $job.name, status: $status, category: 'none', reason: '' }]
     } else if $status in [created, pending, running] {
-        [{ name: $job.name, job: $job.name, status: $status, category: 'inconclusive', reason: 'Job did not finish.' }]
+        [{ name: $job.name, qualified: $job.name, job: $job.name, status: $status, category: 'inconclusive', reason: 'Job did not finish.' }]
     } else {
         let testcases = xml-testcases $junit
         if ($testcases | is-empty) {
             let category = if $status == success { 'none' } else { 'engine' }
-            [{ name: $job.name, job: $job.name, status: $status, category: $category, reason: (if $status == success { '' } else { 'Quality Gate JUnit artifact was missing or invalid.' }) }]
+            [{ name: $job.name, qualified: $job.name, job: $job.name, status: $status, category: $category, reason: (if $status == success { '' } else { 'Quality Gate JUnit artifact was missing or invalid.' }) }]
         } else {
             $testcases | each {|testcase| classify-testcase $job $testcase }
         }
     }
+}
+
+# An entry of expected_findings is either a check name ("lint:python:ruff") or a
+# project-qualified one ("services/api / lint:python:ruff").
+def matches-entry [row: record, entries: list<string>]: nothing -> bool {
+    ($row.name in $entries) or ($row.qualified in $entries)
 }
 
 export def evaluate [expectation: record, jobs: list<record>]: nothing -> record {
@@ -68,15 +74,28 @@ export def evaluate [expectation: record, jobs: list<record>]: nothing -> record
     let check_names = $classified | get name | uniq
     let missing_jobs = $required_jobs | where {|name| $name not-in $job_names }
     let missing_checks = $required_checks | where {|name| $name not-in $check_names }
+    let findings = $classified | where category == finding
     let engine_failures = $classified | where category == engine
-    let unexpected_findings = $classified | where category == finding and name not-in $expected_findings
+    let unexpected_findings = $findings | where {|row| not (matches-entry $row $expected_findings) }
+    let missing_findings = $expected_findings | where {|entry|
+        not ($findings | any {|row| $entry in [$row.name $row.qualified] })
+    }
     let unexpected_skipped = $classified | where status == skipped and job not-in $expected_skipped
     let inconclusive = $classified | where category == inconclusive
-    let healthy = (($missing_jobs | is-empty) and ($missing_checks | is-empty) and ($engine_failures | is-empty) and ($unexpected_findings | is-empty) and ($unexpected_skipped | is-empty) and ($inconclusive | is-empty))
+    let healthy = (
+        ($missing_jobs | is-empty)
+        and ($missing_checks | is-empty)
+        and ($missing_findings | is-empty)
+        and ($engine_failures | is-empty)
+        and ($unexpected_findings | is-empty)
+        and ($unexpected_skipped | is-empty)
+        and ($inconclusive | is-empty)
+    )
     {
         healthy: $healthy
         missing_jobs: $missing_jobs
         missing_checks: $missing_checks
+        missing_findings: $missing_findings
         engine_failures: $engine_failures
         unexpected_findings: $unexpected_findings
         unexpected_skipped: $unexpected_skipped

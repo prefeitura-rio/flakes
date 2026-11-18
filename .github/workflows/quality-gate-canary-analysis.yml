@@ -20,8 +20,9 @@ on:
         type: boolean
 
 permissions:
-  contents: write
-  pull-requests: write
+  actions: read
+  contents: read
+  pull-requests: read
 
 concurrency:
   group: quality-gate-canary-analysis
@@ -43,9 +44,10 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
       - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
       - name: Use Quality Gate binary cache
-        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: prefeitura-rio
           extraPullNames: devenv
@@ -63,6 +65,7 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ steps.release-token.outputs.token || github.token }}
+          ACTIONS_READ_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -88,17 +91,20 @@ jobs:
           trap 'rm -rf "$tmp"' EXIT
           artifact_name="quality-gate-canary-${candidate_sha}"
           echo "CANARY_ARTIFACT_NAME=$artifact_name" >> "$GITHUB_ENV"
-          previous_artifact_id="$(gh api \
+          reuse_analysis=false
+          previous_artifact_id="$(GH_TOKEN="$ACTIONS_READ_TOKEN" gh api \
             "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=100" \
-            --jq '.artifacts[] | select(.expired == false) | .id' | head -n 1 || true)"
+            --jq '.artifacts[] | select(.expired == false) | .id' | head -n 1)"
           if [ -n "$previous_artifact_id" ]; then
-            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${previous_artifact_id}/zip" > "$tmp/previous.zip"
+            GH_TOKEN="$ACTIONS_READ_TOKEN" gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/artifacts/${previous_artifact_id}/zip" > "$tmp/previous.zip"
             if unzip -p "$tmp/previous.zip" canary-analysis.json | jq -e '.healthy == true' >/dev/null; then
-              echo "Candidate ${candidate_sha} already has a healthy canary analysis."
-              exit 0
+              echo "Candidate ${candidate_sha} already has a healthy canary analysis; skipping the sandbox pipelines."
+              unzip -p "$tmp/previous.zip" canary-analysis.json > "$tmp/reused-analysis.json"
+              cp "$tmp/reused-analysis.json" canary-analysis.json
+              reuse_analysis=true
             fi
           fi
-          pipelines="$tmp/pipelines.tsv"
           cat > "$tmp/projects.tsv" <<'EOF'
           48|python-battlegrounds
           49|go-battlegrounds
@@ -106,98 +112,102 @@ jobs:
           51|vue-battlegrounds
           78|multi-repo-battlegrounds
           EOF
+          if [ "$reuse_analysis" != true ]; then
+            pipelines="$tmp/pipelines.tsv"
 
-          while IFS='|' read -r project_id project_name; do
-            response="$(curl --fail-with-body --silent --show-error \
-              --request POST \
-              --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-              --form ref=main \
-              --form "variables[PREFRIO_REF]=$candidate_sha" \
-              --form "variables[QUALITY_GATE_CANARY]=true" \
-              "$GITLAB_API/projects/$project_id/pipeline")"
-            pipeline_id="$(jq -r .id <<<"$response")"
-            printf '%s|%s|%s\n' "$project_id" "$project_name" "$pipeline_id" >> "$pipelines"
-          done < "$tmp/projects.tsv"
-
-          timeout_minutes=45
-          deadline=$((SECONDS + timeout_minutes * 60))
-          while true; do
-            all_done=true
-            while IFS='|' read -r project_id project_name pipeline_id; do
-              status="$(curl --fail-with-body --silent --show-error \
+            while IFS='|' read -r project_id project_name; do
+              response="$(curl --fail-with-body --silent --show-error \
+                --request POST \
                 --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-                "$GITLAB_API/projects/$project_id/pipelines/$pipeline_id" | jq -r .status)"
-              case "$status" in
-                created|pending|running|preparing|waiting_for_resource)
-                  all_done=false
-                  ;;
-              esac
-              printf '%s: %s\n' "$project_name" "$status"
-            done < "$pipelines"
-            if [ "$all_done" = true ]; then
-              break
-            fi
-            if [ "$SECONDS" -ge "$deadline" ]; then
-              echo "Canary pipeline timeout after ${timeout_minutes} minutes." >&2
-              exit 1
-            fi
-            sleep 15
-          done
+                --form ref=main \
+                --form "variables[QUALITY_GATE_REF]=$candidate_sha" \
+                --form "variables[QUALITY_GATE_CANARY]=true" \
+                "$GITLAB_API/projects/$project_id/pipeline")"
+              pipeline_id="$(jq -r .id <<<"$response")"
+              printf '%s|%s|%s\n' "$project_id" "$project_name" "$pipeline_id" >> "$pipelines"
+            done < "$tmp/projects.tsv"
 
-          results="$tmp/results.json"
-          printf '[]\n' > "$results"
-          while IFS='|' read -r project_id project_name pipeline_id; do
-            jobs_file="$tmp/jobs-$project_id.json"
-            printf '[]\n' > "$jobs_file"
-            jobs="$(curl --fail-with-body --silent --show-error \
-              --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-              "$GITLAB_API/projects/$project_id/pipelines/$pipeline_id/jobs?per_page=100")"
-            while read -r job_id job_name job_status; do
-              trace="$(curl --fail-with-body --silent --show-error \
-                --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-                "$GITLAB_API/projects/$project_id/jobs/$job_id/trace" || true)"
-              junit=""
-              if [[ "$job_name" =~ ^quality-gate:(format|lint|strlint|typecheck|tests)$ ]]; then
-                artifact="$tmp/artifact-${job_id}.zip"
-                if curl --fail-with-body --silent --show-error \
+            timeout_minutes=45
+            deadline=$((SECONDS + timeout_minutes * 60))
+            while true; do
+              all_done=true
+              while IFS='|' read -r project_id project_name pipeline_id; do
+                status="$(curl --fail-with-body --silent --show-error \
                   --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-                  "$GITLAB_API/projects/$project_id/jobs/$job_id/artifacts" \
-                  --output "$artifact"; then
-                  member="$(unzip -Z1 "$artifact" | grep -E 'quality-gate-(format|lint|strlint|test)\.xml$' | head -n 1 || true)"
-                  if [ -n "$member" ]; then
-                    junit="$(unzip -p "$artifact" "$member")"
+                  "$GITLAB_API/projects/$project_id/pipelines/$pipeline_id" | jq -r .status)"
+                case "$status" in
+                  created|pending|running|preparing|waiting_for_resource)
+                    all_done=false
+                    ;;
+                esac
+                printf '%s: %s\n' "$project_name" "$status"
+              done < "$pipelines"
+              if [ "$all_done" = true ]; then
+                break
+              fi
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "Canary pipeline timeout after ${timeout_minutes} minutes." >&2
+                exit 1
+              fi
+              sleep 15
+            done
+
+            results="$tmp/results.json"
+            printf '[]\n' > "$results"
+            while IFS='|' read -r project_id project_name pipeline_id; do
+              jobs_file="$tmp/jobs-$project_id.json"
+              printf '[]\n' > "$jobs_file"
+              jobs="$(curl --fail-with-body --silent --show-error \
+                --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+                "$GITLAB_API/projects/$project_id/pipelines/$pipeline_id/jobs?per_page=100")"
+              while read -r job_id job_name job_status; do
+                trace="$(curl --fail-with-body --silent --show-error \
+                  --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+                  "$GITLAB_API/projects/$project_id/jobs/$job_id/trace" || true)"
+                junit=""
+                if [[ "$job_name" =~ ^quality-gate:(format|lint|strlint|typecheck|tests)$ ]]; then
+                  artifact="$tmp/artifact-${job_id}.zip"
+                  if curl --fail-with-body --silent --show-error \
+                    --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+                    "$GITLAB_API/projects/$project_id/jobs/$job_id/artifacts" \
+                    --output "$artifact"; then
+                    member="$(unzip -Z1 "$artifact" | grep -E 'quality-gate-(format|lint|strlint|typecheck|test)\.xml$' | head -n 1 || true)"
+                    if [ -n "$member" ]; then
+                      junit="$(unzip -p "$artifact" "$member")"
+                    fi
                   fi
                 fi
-              fi
-              jq --arg name "$job_name" \
-                --arg status "$job_status" \
-                --arg trace "$trace" \
-                --arg junit "$junit" \
-                '. += [{name: $name, status: $status, trace: $trace, junit: $junit}]' \
-                "$jobs_file" > "$jobs_file.tmp"
-              mv "$jobs_file.tmp" "$jobs_file"
-            done < <(jq -r '.[] | [.id, .name, .status] | @tsv' <<<"$jobs")
+                jq --arg name "$job_name" \
+                  --arg status "$job_status" \
+                  --arg trace "$trace" \
+                  --arg junit "$junit" \
+                  '. += [{name: $name, status: $status, trace: $trace, junit: $junit}]' \
+                  "$jobs_file" > "$jobs_file.tmp"
+                mv "$jobs_file.tmp" "$jobs_file"
+              done < <(jq -r '.[] | [.id, .name, .status] | @tsv' <<<"$jobs")
 
-            analysis="$(nix --extra-experimental-features 'nix-command flakes' run --inputs-from . nixpkgs#nushell -- \
-              release/canary-analysis.nu evaluate release/canary-expectations.yaml "$project_id" "$jobs_file")"
-            jq --arg id "$project_id" --arg name "$project_name" \
-              --argjson analysis "$analysis" \
-              '. += [{project_id: ($id | tonumber), project: $name, analysis: $analysis}]' \
-              "$results" > "$results.tmp"
-            mv "$results.tmp" "$results"
-          done < "$pipelines"
+              analysis="$(nix --extra-experimental-features 'nix-command flakes' run --inputs-from . nixpkgs#nushell -- \
+                release/canary-analysis.nu evaluate release/canary-expectations.yaml "$project_id" "$jobs_file")"
+              jq --arg id "$project_id" --arg name "$project_name" \
+                --argjson analysis "$analysis" \
+                '. += [{project_id: ($id | tonumber), project: $name, analysis: $analysis}]' \
+                "$results" > "$results.tmp"
+              mv "$results.tmp" "$results"
+            done < "$pipelines"
 
-          jq --arg candidate_ref "$candidate_ref" --arg candidate_sha "$candidate_sha" \
-            '{candidate_ref: $candidate_ref, candidate_sha: $candidate_sha, projects: ., healthy: ([.[].analysis.healthy] | all)}' \
-            "$results" | tee canary-analysis.json
+            jq --arg candidate_ref "$candidate_ref" --arg candidate_sha "$candidate_sha" \
+              '{candidate_ref: $candidate_ref, candidate_sha: $candidate_sha, projects: ., healthy: ([.[].analysis.healthy] | all)}' \
+              "$results" | tee canary-analysis.json
 
-          {
-            echo "## Quality Gate Canary Analysis"
-            echo
-            echo "- Candidate: \`$candidate_ref\`"
-            echo "- SHA: \`$candidate_sha\`"
-            jq -r '.projects[] | "- \(.project): healthy=\(.analysis.healthy), engine_failures=\(.analysis.engine_failures | length), unexpected_findings=\(.analysis.unexpected_findings | length)"' canary-analysis.json
-          } >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "## Quality Gate Canary Analysis"
+              echo
+              echo "- Candidate: \`$candidate_ref\`"
+              echo "- SHA: \`$candidate_sha\`"
+              jq -r '.projects[] | "- \(.project): healthy=\(.analysis.healthy), engine_failures=\(.analysis.engine_failures | length), unexpected_findings=\(.analysis.unexpected_findings | length)"' canary-analysis.json
+            } >> "$GITHUB_STEP_SUMMARY"
+
+          fi
 
           if [ "$(jq '[.projects[].analysis.healthy] | all' canary-analysis.json)" != true ]; then
             echo "Canary analysis is unhealthy." >&2
