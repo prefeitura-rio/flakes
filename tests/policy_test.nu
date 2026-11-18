@@ -210,7 +210,7 @@ def test-node-runtime-is-selected-for-each-project [] {
             write-node-runtime ($root | path join $'node($major)') $major
         }
         write-exit-tool $bin npm 0
-        write-executable ($bin | path join tsc) "#!/bin/sh\nprintf '{\"compilerOptions\":{},\"files\":[\"./src/app.ts\"]}\\n'\n"
+        write-show-config-tool $bin
         for name in [a b] {
             let project = $root | path join apps $name
             write-executable ($project | path join node_modules .bin tsc) $"#!/bin/sh\necho \"($name):$\(node --version\)\" >> '($log)'\n"
@@ -236,7 +236,7 @@ def test-node-version-mismatch-is-rejected [] {
         let bin = $root | path join fakebin
         write-node-runtime $bin 22
         write-exit-tool $bin npm 0
-        write-executable ($bin | path join tsc) "#!/bin/sh\nprintf '{\"compilerOptions\":{},\"files\":[\"./src/app.ts\"]}\\n'\n"
+        write-show-config-tool $bin
         write-executable ($root | path join node_modules .bin tsc) "#!/bin/sh\nexit 0\n"
         let result = run-script $root {PATH: ($env.PATH | prepend $bin)} category typecheck
         assert ($result.exit_code != 0)
@@ -258,7 +258,7 @@ def test-typecheck-requires-the-project-compiler [] {
         write-node-runtime $bin 24
         write-exit-tool $bin npm 0
         write-exit-tool $bin npx 0
-        write-executable ($bin | path join tsc) "#!/bin/sh\nprintf '{\"compilerOptions\":{},\"files\":[\"./src/app.ts\"]}\\n'\n"
+        write-show-config-tool $bin
         let result = run-script $root {PATH: ($env.PATH | prepend $bin)} category typecheck
         assert ($result.exit_code != 0)
         let failure = failed-checks $result | first
@@ -288,7 +288,7 @@ def test-vue-projects-are-checked-with-vue-tsc-and-others-with-tsc [] {
             let log = $root | path join compilers.log
             write-node-runtime $bin 24
             write-exit-tool $bin npm 0
-            write-executable ($bin | path join tsc) "#!/bin/sh\nprintf '{\\"compilerOptions\\":{},\\"files\\":[\\"./src/app.ts\\"]}\\n'\n"
+            write-show-config-tool $bin
             for name in [tsc vue-tsc] {
                 write-executable ($root | path join node_modules .bin $name) $"#!/bin/sh\necho '($name)' >> '($log)'\n"
             }
@@ -386,7 +386,7 @@ def test-go-tool-exit-codes-are-classified-by-tool [] {
 def test-typescript-tool-exit-codes-are-classified-by-tool [] {
     let prepare = {|root bin|
         write-node-runtime $bin 24
-        write-executable ($bin | path join tsc) "#!/bin/sh\nprintf '{\"compilerOptions\":{},\"files\":[\"./src/app.ts\"]}\\n'\n"
+        write-show-config-tool $bin
     }
     let with_compiler = {|code|
         {|root bin|

@@ -1,5 +1,12 @@
 export const FLAKE = path self | path dirname | path join .. ..
 
+# A runner has no global Git configuration; tests must not lean on the identity
+# or settings of whoever runs them.
+export-env {
+    $env.GIT_CONFIG_GLOBAL = '/dev/null'
+    $env.GIT_CONFIG_NOSYSTEM = '1'
+}
+
 export const PYTHON_CHECKS = [
     format:python:ruff
     lint:python:ruff
@@ -168,8 +175,19 @@ export def assert-corpus-case [
 
 export def write-executable [target: path, content: string] {
     mkdir ($target | path dirname)
-    $content | save --force $target
+    (test-shell-script $content) | save --force $target
     ^chmod +x $target
+}
+
+# Scripts written for `/bin/sh` run under the pinned dash when the development
+# shell provides one, whatever `/bin/sh` is on this machine.
+export def test-shell-script [content: string]: nothing -> string {
+    let shell = $env.QUALITY_GATE_TEST_SH? | default ''
+    if ($shell | is-empty) or not ($content | str starts-with '#!/bin/sh') {
+        $content
+    } else {
+        $content | str replace '#!/bin/sh' $'#!($shell)'
+    }
 }
 
 # A stand-in for an external tool that prints `output` and exits with `code`.
@@ -208,4 +226,13 @@ export def run-script [root: path, extra: record, ...arguments: string]: nothing
         ^nu ($files | path join quality-gate.nu) ...$arguments | complete
     }
     $result | insert checks (junit-checks ($environment.QUALITY_GATE_JUNIT_FILE)) | insert junit $environment.QUALITY_GATE_JUNIT_FILE
+}
+
+# A stand-in for `tsc --showConfig`. The JSON lives in a file and the script only
+# cats it, so the result does not depend on how the shell treats escapes.
+export def write-show-config-tool [bin: path, files: list<string> = ['./src/app.ts']] {
+    let document = $bin | path join tsc-config.json
+    mkdir $bin
+    {compilerOptions: {}, files: $files} | to json --raw | save --force $document
+    write-executable ($bin | path join tsc) $"#!/bin/sh\ncat '($document)'\n"
 }

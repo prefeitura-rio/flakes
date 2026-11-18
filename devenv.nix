@@ -11,6 +11,9 @@ in
   name = "flakes";
 
   env.NU_LIB_DIRS = "${inputs.nutest}";
+  # Fake tools in the self-test run under dash, the /bin/sh of Debian/Ubuntu
+  # runners, so shell-specific behaviour shows up on every machine.
+  env.QUALITY_GATE_TEST_SH = "${pkgs.dash}/bin/dash";
 
   packages = with pkgs; [
     nushell

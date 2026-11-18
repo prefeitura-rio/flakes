@@ -25,9 +25,10 @@ def bootstrap-fixture []: nothing -> record {
     ^git init --quiet $seed
     'one' | save --force ($seed | path join file.txt)
     ^git -C $seed add --all
-    ^git -C $seed -c user.name=t -c user.email=t@example.invalid commit --quiet -m one
-    ^git -C $seed tag --annotate quality-gate-v1.0.0 --message release
-    ^git -C $seed tag --annotate quality-gate-latest --message latest
+    let identity = [-c user.name=t -c user.email=t@example.invalid]
+    ^git -C $seed ...$identity commit --quiet -m one
+    ^git -C $seed ...$identity tag --annotate quality-gate-v1.0.0 --message release
+    ^git -C $seed ...$identity tag --annotate quality-gate-latest --message latest
     ^git -C $seed push --quiet $remote --tags
     ^git init --quiet $consumer
     let bin = $root | path join bin

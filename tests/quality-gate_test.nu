@@ -56,7 +56,13 @@ def run-quality-gate-app [root: path, app: string, ...arguments: string] {
 def write-executable [target: path, content: string] {
     let parent = $target | path dirname
     mkdir $parent
-    $content | save --force $target
+    let shell = $env.QUALITY_GATE_TEST_SH? | default ''
+    let script = if ($shell | is-not-empty) and ($content | str starts-with '#!/bin/sh') {
+        $content | str replace '#!/bin/sh' $'#!($shell)'
+    } else {
+        $content
+    }
+    $script | save --force $target
     ^chmod +x $target
 }
 

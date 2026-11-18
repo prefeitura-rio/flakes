@@ -396,6 +396,15 @@ devenv tasks run quality-gate:self-test # test the Quality Gate itself
 devenv tasks run pkgs:test # package tests plus internal flakes tests
 ```
 
+The self-test must not depend on the machine that runs it. Inside `devenv shell`
+the fake tools run under `dash` (the `/bin/sh` of Ubuntu runners) and the tests
+ignore your global Git configuration. Before pushing, run the suite in a clean
+Ubuntu container with no Git identity and an unprivileged user:
+
+```bash
+tests/ci/run-clean.sh   # tests the committed HEAD; needs Docker or CONTAINER_RUNTIME=podman
+```
+
 ## Adding a package
 
 1. Create `pkgs/<name>/` with a `default.nix` that defines `overlays.<name>`, a `README.md`, and a `tests/` folder. The flake picks it up with no other change.
