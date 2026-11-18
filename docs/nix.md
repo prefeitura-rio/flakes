@@ -149,16 +149,25 @@ Check it with `devenv --version`. Then `devenv shell` in this repository gives y
 ### 4. Enable the Prefeitura Rio binary cache
 
 The Quality Gate uses the public `prefeitura-rio` and `devenv` Cachix caches.
-Add the substituters and public keys below to `~/.config/nix/nix.conf` so
-local hooks can use the cache without compiling `complexipy`:
+Without them the first hook after each release compiles `complexipy` locally.
+
+Nix only honours substituters from a **trusted user**, and for any other user it
+silently ignores `~/.config/nix/nix.conf` and the `nixConfig` of this flake
+("ignoring untrusted substituter"). Configure the daemon instead, as root, in
+`/etc/nix/nix.conf`:
 
 ```ini
 extra-substituters = https://prefeitura-rio.cachix.org https://devenv.cachix.org
 extra-trusted-public-keys = prefeitura-rio.cachix.org-1:Y+SotJw1tzXRsM/a6Af2mwX8HTZjnefjsuFT0DNevX8= devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=
 ```
 
-These settings are for reading public caches only; do not put a Cachix write
-token in `nix.conf`.
+Restart the daemon afterwards (`sudo systemctl restart nix-daemon` on Linux,
+`sudo launchctl kickstart -k system/org.nixos.nix-daemon` on macOS). On NixOS set
+`nix.settings.extra-substituters` and `nix.settings.extra-trusted-public-keys`.
+Verify with `nix config show extra-substituters`.
+
+These settings only read public caches. Never put a Cachix write token in
+`nix.conf`.
 
 ## Conventions
 

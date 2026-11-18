@@ -73,6 +73,9 @@ pkgs.writeShellScript "quality-gate-runner" ''
       language="''${2:-}"
       ;;
   esac
+  if [ "''${1:-}" = detect ]; then
+    quality_gate_app="quality-gate-detect"
+  fi
   case "$language" in
     py|python) quality_gate_app="quality-gate-python" ;;
     go) quality_gate_app="quality-gate-go" ;;
