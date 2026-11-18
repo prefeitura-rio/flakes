@@ -124,3 +124,48 @@ def test_the_discovery_app_only_runs_detect [] {
     cleanup $root
     if $outcome != null { error make {msg: $outcome} }
 }
+
+# Which Environments may hold each protected secret. A secret stored at
+# repository level is readable by any branch with write access, so every job
+# that uses one must run inside the Environment that guards it.
+const SECRET_ENVIRONMENTS = {
+    QUALITY_GATE_RELEASE_APP_ID: [quality-gate-release quality-gate-promotion]
+    QUALITY_GATE_RELEASE_APP_PRIVATE_KEY: [quality-gate-release quality-gate-promotion]
+    CACHIX_AUTH_TOKEN: [cachix-publish]
+    GITLAB_CANARY_TOKEN: [quality-gate-release]
+}
+
+# A job runs in `environment`, or hands one to the reusable workflow it calls.
+def job-environment [job: record]: nothing -> string {
+    let direct = $job.environment? | default ''
+    let name = if ($direct | describe | str starts-with 'record') { $direct.name } else { $direct }
+    if ($name | is-not-empty) { $name } else { $job.with?.environment? | default '' }
+}
+
+@test
+def test_every_job_using_a_protected_secret_runs_in_its_environment [] {
+    let protected = $SECRET_ENVIRONMENTS | columns
+    let findings = workflow-files | each {|file|
+        let workflow = parse-workflow $file
+        $workflow.jobs | items {|name, job|
+            let used = $protected | where {|secret| (($job | to json) | str contains $'secrets.($secret)') }
+            if ($used | is-empty) { return null }
+            let environment = job-environment $job
+            $used | each {|secret|
+                let allowed = $SECRET_ENVIRONMENTS | get $secret
+                if $environment not-in $allowed {
+                    $'($file | path basename):($name) uses ($secret) in environment "($environment)", expected one of ($allowed | str join ", ")'
+                }
+            }
+        } | compact | flatten
+    } | flatten
+    assert ($findings | is-empty) ($findings | str join "\n")
+}
+
+@test
+def test_the_secret_check_sees_every_protected_secret [] {
+    let seen = workflow-files | each {|file| open --raw $file } | str join "\n"
+    let missing = $SECRET_ENVIRONMENTS | columns | where {|secret| not ($seen | str contains $'secrets.($secret)') }
+    # GITLAB_CANARY_TOKEN only exists from the canary analysis PR onwards.
+    assert equal ($missing | where {|secret| $secret != GITLAB_CANARY_TOKEN }) [] $'secrets no longer referenced: ($missing | str join ", ")'
+}
