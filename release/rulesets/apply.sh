@@ -6,6 +6,11 @@
 #   apply.sh --app-id ID --apply     change only what differs; running it twice is a no-op
 #   apply.sh --app-id ID --verify    read only; exit 1 when GitHub differs from the desired state
 #
+# --skip-ruleset NAME leaves one ruleset alone in every mode (repeatable). The
+# `protect-master` ruleset requires the Quality Gate checks and review of code
+# owners, which cannot be satisfied while the workflows still live only in the
+# stacked pull requests; apply it once they are on master.
+#
 # It needs a token that administers the repository (`gh auth status`) and the
 # release App to be installed; see APP-SETUP.md. Secret values are never read or
 # copied: --verify only checks which secret names exist where.
@@ -14,6 +19,7 @@ set -euo pipefail
 repository="prefeitura-rio/flakes"
 mode="dry-run"
 app_id=""
+skipped_rulesets=()
 rulesets_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # phrmendes, gabriel-milan
@@ -33,11 +39,12 @@ protected_secrets="QUALITY_GATE_RELEASE_APP_ID QUALITY_GATE_RELEASE_APP_PRIVATE_
 
 usage() {
   cat >&2 <<'EOF'
-Usage: apply.sh --app-id ID [--repository OWNER/REPO] [--apply | --verify]
+Usage: apply.sh --app-id ID [--repository OWNER/REPO] [--skip-ruleset NAME]... [--apply | --verify]
 
   --app-id ID        numeric ID of the release GitHub App (the "App ID" shown in
                      the App settings, not the installation ID)
   --repository R     repository to configure (default: prefeitura-rio/flakes)
+  --skip-ruleset N   do not create, change or verify the ruleset called N (repeatable)
   --apply            change what differs (default is a dry run)
   --verify           read only; exit 1 if the repository differs from the policy
 EOF
@@ -47,6 +54,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --app-id) app_id="$2"; shift 2 ;;
     --repository) repository="$2"; shift 2 ;;
+    --skip-ruleset) skipped_rulesets+=("$2"); shift 2 ;;
     --apply) mode="apply"; shift ;;
     --verify) mode="verify"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -181,6 +189,13 @@ ruleset_facets='{
 ruleset() {
   local desired="$1" name id actual
   name="$(jq -r .name <<<"$desired")"
+
+  for skipped in ${skipped_rulesets[@]+"${skipped_rulesets[@]}"}; do
+    if [[ "$skipped" == "$name" ]]; then
+      echo "SKIPPED  ruleset $name (--skip-ruleset)"
+      return
+    fi
+  done
   id="$(fetch rulesets | jq -r --arg name "$name" '[.[] | select(.name == $name)] | first | .id // empty' || true)"
 
   if [[ -z "$id" ]]; then
