@@ -88,7 +88,7 @@ jobs:
     permissions:
       actions: read
       contents: write
-    uses: prefeitura-rio/actions/.github/workflows/release.yml@e5886078fe4326d546debebb604496b16c339cd8
+    uses: prefeitura-rio/actions/.github/workflows/release.yml@29bcbff1a85aad07d9d3c0771fc0601e752120b4
     with:
       release_branch: master
       target_sha: ${{ github.event.workflow_run.head_sha }}
@@ -101,6 +101,7 @@ jobs:
       required_workflow: Quality Gate Tests
       git_author_name: CI Release Bot
       git_author_email: 41898282+github-actions[bot]@users.noreply.github.com
+      environment: quality-gate-release
     secrets:
       QUALITY_GATE_RELEASE_APP_ID: ${{ secrets.QUALITY_GATE_RELEASE_APP_ID }}
       QUALITY_GATE_RELEASE_APP_PRIVATE_KEY: ${{ secrets.QUALITY_GATE_RELEASE_APP_PRIVATE_KEY }}
