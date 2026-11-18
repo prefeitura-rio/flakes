@@ -224,6 +224,35 @@ def test_an_existing_ruleset_with_the_same_name_is_updated_not_recreated [] {
 }
 
 @test
+def test_a_skipped_ruleset_is_neither_created_nor_verified [] {
+    let world = new-world
+    let outcome = try {
+        secrets-in-environments $world
+        let applied = apply-script $world --apply --skip-ruleset protect-master
+        assert equal $applied.exit_code 0 $'($applied.stdout)\n($applied.stderr)'
+        assert ($applied.stdout | str contains 'SKIPPED  ruleset protect-master')
+        let rulesets = (open $world.state).rulesets
+        assert equal ($rulesets | get name) [protect-quality-gate-tags]
+
+        let verified = apply-script $world --verify --skip-ruleset protect-master
+        assert equal $verified.exit_code 0 $'($verified.stdout)\n($verified.stderr)'
+        let strict = apply-script $world --verify
+        assert equal $strict.exit_code 1
+        assert ($strict.stdout | str contains 'ruleset protect-master does not exist')
+
+        # Once the checks exist on master the skip is dropped and the ruleset is created.
+        let complete = apply-script $world --apply
+        assert equal $complete.exit_code 0 $'($complete.stdout)\n($complete.stderr)'
+        assert equal ((open $world.state).rulesets | length) 2
+        assert equal (apply-script $world --verify | get exit_code) 0
+        null
+    } catch {|error|
+        $error.msg
+    }
+    finish $world $outcome
+}
+
+@test
 def test_secrets_left_at_repository_level_fail_the_verification [] {
     let world = new-world
     let outcome = try {
