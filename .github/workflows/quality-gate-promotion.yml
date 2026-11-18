@@ -79,6 +79,7 @@ jobs:
     if: github.event_name == 'push'
     name: Promote quality-gate-latest
     runs-on: ubuntu-latest
+    environment: quality-gate-release
     permissions:
       contents: write
     steps:
