@@ -35,17 +35,20 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install Nix
-        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
-      - name: Use devenv binary cache
-        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - name: Use Quality Gate binary caches
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
-          name: devenv
+          name: prefeitura-rio
+          extraPullNames: devenv
+          skipPush: true
       - name: Install devenv
-        run: nix profile install nixpkgs#devenv
+        run: nix profile install --inputs-from . nixpkgs#devenv
       - name: Validate the flake app
         run: |
           nix build \
             .#quality-gate \
+            .#quality-gate-detect \
             .#quality-gate-python \
             .#quality-gate-go \
             .#quality-gate-typescript \
@@ -63,12 +66,50 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Install Nix
-        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - name: Use Quality Gate binary caches
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: prefeitura-rio
+          extraPullNames: devenv
+          skipPush: true
       - name: Build Darwin apps
         run: |
           nix build \
             .#packages.aarch64-darwin.quality-gate \
+            .#packages.aarch64-darwin.quality-gate-detect \
             .#packages.aarch64-darwin.quality-gate-python \
             .#packages.aarch64-darwin.quality-gate-go \
             .#packages.aarch64-darwin.quality-gate-typescript \
+            --no-link
+
+  publish-cache:
+    name: Publish Quality Gate binary cache
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [tests, darwin-build]
+    runs-on: ubuntu-latest
+    environment: cachix-publish
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Install Nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - name: Publish Quality Gate builds
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: prefeitura-rio
+          extraPullNames: devenv
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Build and publish Linux apps
+        run: |
+          nix build \
+            .#quality-gate \
+            .#quality-gate-detect \
+            .#quality-gate-python \
+            .#quality-gate-go \
+            .#quality-gate-typescript \
             --no-link
