@@ -48,6 +48,38 @@ def test_canary_force_requires_existing_stable_channel [] {
 def test_canary_rejects_future_tags [] {
     let result = (decide 'quality-gate-v1.0.0' '' ((date now) + 1day) (date now) 3)
     assert equal $result.decision reject
+    assert ($result.reason | str contains 'future') $result.reason
+}
+
+@test
+def test_canary_bake_boundary_is_exact [] {
+    let now = date now
+    let almost = (decide 'quality-gate-v1.0.0' '' ($now - 3day + 1min) $now 3)
+    assert equal $almost.decision reject
+    assert ($almost.reason | str contains 'bake time') $almost.reason
+    let complete = (decide 'quality-gate-v1.0.0' '' ($now - 3day) $now 3)
+    assert equal $complete.decision promote
+}
+
+@test
+def test_canary_versions_are_compared_numerically [] {
+    let now = date now
+    let cases = [
+        {candidate: 'quality-gate-v1.9.0', current: 'quality-gate-v1.10.0', expected: promote}
+        {candidate: 'quality-gate-v1.10.0', current: 'quality-gate-v1.9.0', expected: reject}
+        {candidate: 'quality-gate-v1.2.0', current: 'quality-gate-v1.3.0', expected: promote}
+        {candidate: 'quality-gate-v1.3.0', current: 'quality-gate-v1.2.0', expected: reject}
+        {candidate: 'quality-gate-v1.0.9', current: 'quality-gate-v1.0.10', expected: promote}
+        {candidate: 'quality-gate-v1.99.99', current: 'quality-gate-v2.0.0', expected: promote}
+        {candidate: 'quality-gate-v2.0.0', current: 'quality-gate-v1.99.99', expected: reject}
+    ]
+    let failures = $cases | each {|case|
+        let result = (decide $case.candidate $case.current ($now - 30day) $now 3 true)
+        if $result.decision != $case.expected {
+            $'emergency ($case.candidate) over ($case.current): expected ($case.expected), got ($result.decision) - ($result.reason)'
+        }
+    } | compact
+    assert ($failures | is-empty) ($failures | str join "\n")
 }
 
 @test
@@ -104,4 +136,49 @@ def test_canary_moves_only_the_floating_tag [] {
         error make {msg: $error.msg}
     }
     rm --recursive --force $root
+}
+
+@test
+def test_canary_floating_tag_move_loses_a_race_against_a_concurrent_promotion [] {
+    let root = mktemp --directory | str trim
+    let bare = $root | path join remote.git
+    let repository = $root | path join repository
+    let bin = $root | path join bin
+    let outcome = try {
+        ^git init --bare --quiet $bare
+        ^git init --quiet $repository
+        ^git -C $repository config user.name 'Quality Gate test'
+        ^git -C $repository config user.email 'quality-gate-test@example.invalid'
+        ^git -C $repository remote add origin $bare
+        for version in [1.0.0 1.1.0 1.2.0] {
+            $version | save --force ($repository | path join README.md)
+            ^git -C $repository add README.md
+            ^git -C $repository commit --quiet -m $version
+            ^git -C $repository tag --annotate $'quality-gate-v($version)' --message $version
+        }
+        ^git -C $repository push --quiet --set-upstream origin HEAD
+        ^git -C $repository push --quiet origin --tags
+        let first = (^bash $MOVE_TAG_SCRIPT --repository $repository --candidate-tag quality-gate-v1.0.0 | complete)
+        assert equal $first.exit_code 0 $first.stderr
+
+        let racer = (^git --git-dir $bare rev-parse 'refs/tags/quality-gate-v1.2.0^{commit}' | str trim)
+        let real_git = (^which git | str trim)
+        mkdir $bin
+        $"#!/bin/sh\n'($real_git)' \"$@\"\nstatus=$?\ncase \" $* \" in\n  *\" ls-remote \"*) '($real_git)' --git-dir '($bare)' update-ref refs/tags/quality-gate-latest ($racer) ;;\nesac\nexit $status\n" | save --force ($bin | path join git)
+        ^chmod +x ($bin | path join git)
+
+        let before = (^git --git-dir $bare rev-parse 'refs/tags/quality-gate-latest^{commit}' | str trim)
+        let lost = with-env {PATH: ($env.PATH | prepend $bin)} {
+            ^bash $MOVE_TAG_SCRIPT --repository $repository --candidate-tag quality-gate-v1.1.0 | complete
+        }
+        assert ($lost.exit_code != 0) 'the move must fail when the remote tag changed after it was read'
+        let after = (^git --git-dir $bare rev-parse 'refs/tags/quality-gate-latest^{commit}' | str trim)
+        assert equal $after $racer 'the concurrent promotion must be preserved'
+        assert ($before != $racer)
+        null
+    } catch {|error|
+        $error.msg
+    }
+    rm --recursive --force $root
+    if $outcome != null { error make {msg: $outcome} }
 }
