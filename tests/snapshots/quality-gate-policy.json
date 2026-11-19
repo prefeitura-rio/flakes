@@ -1,0 +1,217 @@
+{
+  "python": {
+    "ruff_select": [
+      "A001",
+      "A002",
+      "A003",
+      "A004",
+      "A005",
+      "A006",
+      "ARG001",
+      "ARG002",
+      "B006",
+      "B007",
+      "B008",
+      "B023",
+      "B904",
+      "B905",
+      "C901",
+      "E402",
+      "E9",
+      "E722",
+      "F",
+      "FBT001",
+      "FBT002",
+      "FBT003",
+      "I001",
+      "PLR0911",
+      "PLR0912",
+      "PLR0913",
+      "PLR2004",
+      "PGH003",
+      "PGH004",
+      "Q000",
+      "RET504",
+      "RET505",
+      "RUF100",
+      "RUF102",
+      "S102",
+      "S105",
+      "S106",
+      "S107",
+      "S108",
+      "S113",
+      "S608",
+      "SIM102",
+      "SIM105",
+      "SIM108",
+      "T201",
+      "TRY003",
+      "UP007",
+      "UP035",
+      "UP045",
+      "W291",
+      "W293"
+    ],
+    "ruff_ignore": [],
+    "ruff_per_file_ignores": {},
+    "basedpyright": {
+      "typeCheckingMode": "recommended",
+      "failOnWarnings": true,
+      "reportIgnoreCommentWithoutRule": "error"
+    },
+    "ast_grep_rules": {
+      "no-eval.yaml": "3a6ae64feaa0a2a59ab1462af39c74d3c21b3be937574cea8cf9f817c6f282ad",
+      "no-pyright-directive.yaml": "a830ee52817d16cc34de6b6f96d24e3c4f389cb2401eb261a63a9f783f08a689"
+    }
+  },
+  "go": {
+    "default": "none",
+    "linters_enable": [
+      "errcheck",
+      "errorlint",
+      "forbidigo",
+      "govet",
+      "staticcheck",
+      "bodyclose",
+      "unused",
+      "ineffassign",
+      "gocritic",
+      "gocyclo",
+      "unconvert",
+      "unparam",
+      "misspell",
+      "whitespace",
+      "gosec",
+      "nolintlint"
+    ],
+    "run": {
+      "tests": true,
+      "relative-path-mode": "gomod",
+      "modules-download-mode": "readonly"
+    },
+    "exclusions": {
+      "generated": "disable",
+      "presets": [
+        "comments",
+        "common-false-positives",
+        "legacy",
+        "std-error-handling"
+      ],
+      "rules": [
+        {
+          "path": "_test\\.go$",
+          "linters": [
+            "errcheck",
+            "gocyclo",
+            "gosec"
+          ]
+        },
+        {
+          "path": "^cmd/",
+          "linters": [
+            "gosec"
+          ]
+        },
+        {
+          "path": "\\.go$",
+          "linters": [
+            "wsl",
+            "wsl_v5"
+          ]
+        }
+      ],
+      "paths": [
+        "^third_party/",
+        "^builtin/",
+        "^examples/"
+      ]
+    },
+    "nolintlint": {
+      "require-specific": true,
+      "require-explanation": true
+    },
+    "errcheck": {
+      "check-type-assertions": true,
+      "check-blank": true
+    },
+    "gocritic_settings_sha256": "e966bf145c1a5bd4e3ae8c127cd7bcd27f395a6108559aef1a2bcc25955bfddd",
+    "staticcheck_settings_sha256": "db9c59c10cbe13871e6dfac77b9988eca4629113b9fd2daf3bc378cbb842810f",
+    "ast_grep_rules": {
+      "no-http-default-client.yaml": "157f2eb623ce1d07c830f388e9192dec41723bb2aaff1f3ac4cc6f485c797e84",
+      "no-panic.yaml": "98c1102c62eee8a65892c16783e8268f1937ebff236d54d6257ab92babf52ee9"
+    }
+  },
+  "typescript": {
+    "compiler_options": {
+      "alwaysStrict": true,
+      "forceConsistentCasingInFileNames": true,
+      "noImplicitAny": true,
+      "noImplicitThis": true,
+      "noEmit": true,
+      "skipLibCheck": true,
+      "strict": true,
+      "strictBindCallApply": true,
+      "strictFunctionTypes": true,
+      "strictNullChecks": true,
+      "strictPropertyInitialization": true,
+      "useUnknownInCatchVariables": true,
+      "composite": false,
+      "incremental": false
+    },
+    "oxlint_plugins": [
+      "typescript",
+      "vue",
+      "react",
+      "react-hooks",
+      "jsx-a11y"
+    ],
+    "oxlint_overrides": [
+      {
+        "files": [
+          "**/*.test.ts",
+          "**/*.test.tsx",
+          "**/*.spec.ts",
+          "**/*.spec.tsx",
+          "tests/**"
+        ],
+        "rules": {
+          "typescript/no-explicit-any": "off",
+          "typescript/no-non-null-assertion": "off"
+        }
+      }
+    ],
+    "rules": {
+      "no-debugger": "error",
+      "eqeqeq": [
+        "error",
+        "always"
+      ],
+      "no-var": "error",
+      "prefer-const": "error",
+      "typescript/no-explicit-any": "error",
+      "typescript/no-non-null-assertion": "warn",
+      "typescript/ban-ts-comment": [
+        "error",
+        {
+          "ts-expect-error": "allow-with-description",
+          "ts-ignore": "allow-with-description",
+          "ts-nocheck": true,
+          "ts-check": "allow-with-description",
+          "minimumDescriptionLength": 10
+        }
+      ],
+      "react-hooks/rules-of-hooks": "error",
+      "react-hooks/exhaustive-deps": "error",
+      "react/no-array-index-key": "error",
+      "jsx-a11y/alt-text": "error",
+      "jsx-a11y/click-events-have-key-events": "error",
+      "jsx-a11y/no-static-element-interactions": "error"
+    },
+    "ast_grep_rules": {
+      "no-any-assertion.yaml": "c8d3c07863e5902b21a2dd3f25db5cb38d87331be5e8c5a3f857af7a92855532",
+      "no-blanket-disable.yaml": "44ba89b771a62cd9a0493d02c7e431797eb786bb4126c154ebbc01ef36be84be",
+      "no-console.yaml": "74b8ad29b2b39c7d28fe72f2f0e8a89ccbac7682656d784965a2a2321eb51ed8"
+    }
+  }
+}

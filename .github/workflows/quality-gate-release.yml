@@ -1,0 +1,95 @@
+name: Quality Gate Release
+
+on:
+  workflow_run:
+    workflows: ["Quality Gate Tests"]
+    types: [completed]
+    branches: [master]
+
+concurrency:
+  group: quality-gate-release
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  quality-gate-change:
+    if: github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+    steps:
+      - name: Checkout target commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Install Nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - name: Use devenv binary cache
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        with:
+          name: devenv
+      - name: Compare Quality Gate derivations
+        id: compare
+        env:
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          previous_tag="$(git tag --list 'quality-gate-v*' --sort=-v:refname | head -n 1)"
+          if [ -z "$previous_tag" ]; then
+            echo "No previous Quality Gate release exists; the first release is eligible."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git diff --quiet "$previous_tag" "$TARGET_SHA" -- devenv/quality-gate.nix; then
+            echo "The Quality Gate bootstrap profile changed."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          for system in x86_64-linux aarch64-linux aarch64-darwin; do
+            for app in quality-gate quality-gate-python quality-gate-go quality-gate-typescript; do
+              current="$(nix eval --raw \
+                "github:prefeitura-rio/flakes/${TARGET_SHA}#packages.${system}.${app}.drvPath")"
+              previous="$(nix eval --raw \
+                "github:prefeitura-rio/flakes/${previous_tag}#packages.${system}.${app}.drvPath")"
+              if [ "$current" != "$previous" ]; then
+                echo "$app changed for $system:"
+                echo "  previous: $previous"
+                echo "  current:  $current"
+                echo "changed=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            done
+          done
+
+          echo "No Quality Gate derivation changed since $previous_tag."
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: quality-gate-change
+    if: ${{ github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success' && needs.quality-gate-change.outputs.changed == 'true' }}
+    permissions:
+      actions: read
+      contents: write
+    uses: prefeitura-rio/actions/.github/workflows/release.yml@b8e2a9d72d350362d228f48c84e086d9aec679e9
+    with:
+      release_branch: master
+      target_sha: ${{ github.event.workflow_run.head_sha }}
+      initial_version: "1.0.0"
+      bump: minor
+      floating_tag: quality-gate-latest
+      tag_prefix: quality-gate-v
+      toolkit_ref: b8e2a9d72d350362d228f48c84e086d9aec679e9
+      require_workflow_gate: true
+      required_workflow: Quality Gate Tests
+      git_author_name: CI Release Bot
+      git_author_email: 41898282+github-actions[bot]@users.noreply.github.com

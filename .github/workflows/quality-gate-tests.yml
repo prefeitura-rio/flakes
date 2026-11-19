@@ -1,0 +1,74 @@
+name: Quality Gate Tests
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "devenv/**"
+      - "devenv.nix"
+      - "devenv.yaml"
+      - "devenv.lock"
+      - "flake.nix"
+      - "flake.lock"
+      - "pkgs/**"
+      - "tests/**"
+      - "release/**"
+      - ".github/**"
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: quality-gate-tests-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Quality Gate / self-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Install Nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - name: Use devenv binary cache
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        with:
+          name: devenv
+      - name: Install devenv
+        run: nix profile install nixpkgs#devenv
+      - name: Validate the flake app
+        run: |
+          nix build \
+            .#quality-gate \
+            .#quality-gate-python \
+            .#quality-gate-go \
+            .#quality-gate-typescript \
+            --no-link
+      - name: Run Quality Gate self-test
+        run: devenv tasks run quality-gate:self-test
+      - name: Run Quality Gate package tests
+        run: |
+          devenv tasks run complexipy:test
+
+  darwin-build:
+    name: Quality Gate / aarch64-darwin build
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install Nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - name: Build Darwin apps
+        run: |
+          nix build \
+            .#packages.aarch64-darwin.quality-gate \
+            .#packages.aarch64-darwin.quality-gate-python \
+            .#packages.aarch64-darwin.quality-gate-go \
+            .#packages.aarch64-darwin.quality-gate-typescript \
+            --no-link

@@ -1,0 +1,5 @@
+{
+  "name": "corpus-workspace",
+  "private": true,
+  "workspaces": ["packages/*"]
+}

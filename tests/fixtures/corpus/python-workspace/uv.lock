@@ -1,0 +1,19 @@
+version = 1
+revision = 5
+requires-python = ">=3.11"
+
+[manifest]
+members = [
+    "ws-lib",
+    "ws-root",
+]
+
+[[package]]
+name = "ws-lib"
+version = "0.1.0"
+source = { virtual = "packages/lib" }
+
+[[package]]
+name = "ws-root"
+version = "0.1.0"
+source = { virtual = "." }
