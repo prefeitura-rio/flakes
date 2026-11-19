@@ -126,8 +126,8 @@ in
         "python"
         "complexipy"
       ];
-      "lint:python:basedpyright" = nuTask [
-        "lint"
+      "typecheck:python:basedpyright" = nuTask [
+        "typecheck"
         "python"
         "basedpyright"
       ];
@@ -142,8 +142,10 @@ in
       "lint:python:all" = aggregate [
         "lint:python:ruff"
         "lint:python:complexipy"
-        "lint:python:basedpyright"
         "lint:python:strlint"
+      ];
+      "typecheck:python:all" = aggregate [
+        "typecheck:python:basedpyright"
       ];
 
       "format:go:gofumpt" = nuTask [
@@ -171,11 +173,6 @@ in
         "go"
         "vet"
       ];
-      "lint:go:build" = nuTask [
-        "lint"
-        "go"
-        "build"
-      ];
       "typecheck:go:build" = nuTask [
         "typecheck"
         "go"
@@ -189,7 +186,9 @@ in
         "lint:go:golangci"
         "lint:go:strlint"
         "lint:go:vet"
-        "lint:go:build"
+      ];
+      "typecheck:go:all" = aggregate [
+        "typecheck:go:build"
       ];
 
       "format:typescript:oxfmt" = nuTask [
@@ -207,10 +206,10 @@ in
         "typescript"
         "strlint"
       ];
-      "lint:typescript:typecheck" = nuTask [
-        "lint"
-        "typescript"
+      "typecheck:typescript:tsc" = nuTask [
         "typecheck"
+        "typescript"
+        "tsc"
       ];
       "format:typescript:all" = aggregate [
         "format:typescript:oxfmt"
@@ -218,7 +217,9 @@ in
       "lint:typescript:all" = aggregate [
         "lint:typescript:oxlint"
         "lint:typescript:strlint"
-        "lint:typescript:typecheck"
+      ];
+      "typecheck:typescript:all" = aggregate [
+        "typecheck:typescript:tsc"
       ];
 
       "quality-gate:detect" = nuTask [ "detect" ];

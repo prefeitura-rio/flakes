@@ -1,5 +1,7 @@
 use std/assert
 use std/testing *
+use support/isolation.nu
+use support/qg.nu [write-project-compiler write-exit-tool]
 
 const SCRIPT = path self | path dirname | path join ../devenv/files/quality-gate/quality-gate.nu
 const FLAKE = path self | path dirname | path join ..
@@ -30,6 +32,7 @@ def quality-gate-environment [root: path]: nothing -> record {
         QUALITY_GATE_CI: ''
         CI_PROJECT_PATH: ''
         QUALITY_GATE_REPORT_PROJECT: ''
+        XDG_CACHE_HOME: ($root | path join .test-cache)
     }
 }
 
@@ -399,8 +402,7 @@ def test-pnpm-typecheck-requires-a-versioned-package-manager [] {
 
         write-fixture-file $root package.json "{\n  \"name\": \"fixture\",\n  \"private\": true,\n  \"packageManager\": \"pnpm@9.1.0\"\n}\n"
         write-fake-tool $bin pnpm
-        write-fake-tool ($root | path join node_modules .bin) tsc
-        write-executable ($bin | path join tsc) "#!/usr/bin/env nu\nprint '{\"compilerOptions\":{},\"files\":[]}'\n"
+        write-project-compiler $root tsc 'echo "$@" >> "$QUALITY_GATE_FAKE_LOG"' --files []
         let valid = run-quality-gate-with-env $root {
             PATH: ($env.PATH | prepend $bin)
             QUALITY_GATE_FAKE_LOG: $log
@@ -514,12 +516,26 @@ def test-failing-check-escapes-junit-diagnostics [] {
             QUALITY_GATE_JUNIT_FILE: $junit
         } category lint
         assert ($result.exit_code != 0)
-        let junit_content = open --raw $junit
-        assert ($junit_content | str contains 'failures="2"')
-        assert ($junit_content | str contains 'message="')
-        assert ($junit_content | str contains '<![CDATA[')
-        assert ($junit_content | str contains 'diagnostic <bad> & "quoted"')
-        assert not ($junit_content | str contains '<![CDATA[golangci-lint failed with exit code 1\n\nDiagnostics:\ndiagnostic &lt;bad&gt;')
+        # `from xml` rejects a report that is not well-formed, so this also proves
+        # that the diagnostics (`<bad> & "quoted"`) did not break the document.
+        let document = open --raw $junit | from xml
+        let failures = $document.content
+            | where tag == testsuite
+            | each {|suite| $suite.content | where tag == testcase }
+            | flatten
+            | each {|case| $case.content | where tag == failure }
+            | flatten
+        assert equal ($failures | length) 2
+        for failure in $failures {
+            let message = $failure.attributes.message
+            assert ($message | str starts-with 'Category: finding') $message
+            assert ($message | str contains 'diagnostic <bad> & "quoted"') $'the attribute must round-trip through XML escaping: ($message)'
+            # The CDATA copy is raw text. Escaping it as well would show up as
+            # `&lt;` once the report is parsed.
+            let text = $failure.content | get content | str join ''
+            assert ($text | str contains 'diagnostic <bad> & "quoted"') $'the CDATA must hold the raw diagnostics: ($text)'
+            assert not ($text | str contains '&lt;') $'the CDATA is escaped twice: ($text)'
+        }
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -589,20 +605,32 @@ def test-report-mode-requires-a-valid-deadline [] {
         write-fixture-file $root go.mod "module example.com/fixture\n\ngo 1.23.0\n"
         write-fake-tool $bin golangci-lint
         write-fake-tool $bin go
-        for extra in [
-            {}
-            { QUALITY_GATE_REPORT_UNTIL: "not-a-date" }
-            { QUALITY_GATE_REPORT_UNTIL: "2000-01-01" }
-            { QUALITY_GATE_REPORT_UNTIL: "2099-01-01" }
-        ] {
+        let in_days = {|days| (date now) + ($days * 1day) | format date '%Y-%m-%d' }
+        let cases = [
+            {name: missing, extra: {}, expected: 'requires QUALITY_GATE_REPORT_UNTIL'}
+            {name: malformed, extra: {QUALITY_GATE_REPORT_UNTIL: 'not-a-date'}, expected: 'Invalid QUALITY_GATE_REPORT_UNTIL'}
+            {name: expired, extra: {QUALITY_GATE_REPORT_UNTIL: (do $in_days (-2))}, expected: 'expired'}
+            {name: 'one day past the window', extra: {QUALITY_GATE_REPORT_UNTIL: (do $in_days 46)}, expected: 'cannot be more than 45 days'}
+            {name: 'far future', extra: {QUALITY_GATE_REPORT_UNTIL: '2099-01-01'}, expected: 'cannot be more than 45 days'}
+        ]
+        for case in $cases {
             let environment = {
                 PATH: ($env.PATH | prepend $bin)
                 QUALITY_GATE_FAKE_FAILURE: "false"
                 QUALITY_GATE_MODE: "report"
-            } | merge $extra
+            } | merge $case.extra
             let result = run-quality-gate-with-env $root $environment category lint
-            assert ($result.exit_code != 0)
+            assert ($result.exit_code != 0) $'($case.name): must be refused'
+            assert (($result.stdout + $result.stderr) | str contains $case.expected) $'($case.name): expected "($case.expected)", got: ($result.stderr)'
         }
+        # The last day inside the window is accepted: the cap is 45 days, not less.
+        let inside = run-quality-gate-with-env $root {
+            PATH: ($env.PATH | prepend $bin)
+            QUALITY_GATE_FAKE_FAILURE: "true"
+            QUALITY_GATE_MODE: "report"
+            QUALITY_GATE_REPORT_UNTIL: (do $in_days 44)
+        } category lint
+        assert equal $inside.exit_code 0 $'44 days ahead must be accepted: ($inside.stderr)'
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -648,8 +676,7 @@ def test-detection-warns-about-unsupported-python-managers [] {
         assert equal $setup_result.exit_code 0
         assert ($setup_result.stderr | str contains 'setup.py without pyproject.toml')
 
-        rm --recursive --force $root
-        let root = make-fixture
+        rm --force ($root | path join setup.py)
         write-fixture-file $root pyproject.toml "[tool.poetry]\nname = 'legacy'\nversion = '0.1.0'\n"
         let poetry_result = run-quality-gate $root detect
         assert equal $poetry_result.exit_code 0
@@ -789,24 +816,43 @@ def test-curated-policy-snapshot-is-current [] {
     let golangci = open ($QUALITY_GATE_FILES | path join go .golangci.yml)
     let oxlint = open ($QUALITY_GATE_FILES | path join typescript .oxlintrc.json)
     let typescript = open ($QUALITY_GATE_FILES | path join typescript tsconfig.quality-gate.json)
+    let rule_files = {|language|
+        glob ($QUALITY_GATE_FILES | path join $language rules '*.yaml')
+        | sort
+        | each {|file| { name: ($file | path basename), sha256: (open --raw $file | hash sha256 | str trim) } }
+        | reduce --fold {} {|rule, table| $table | insert $rule.name $rule.sha256 }
+    }
     let actual = {
         python: {
             ruff_select: $ruff.lint.select
             ruff_ignore: ($ruff.lint.ignore? | default [])
-            basedpyright_mode: $pyright.typeCheckingMode
-            basedpyright_ignore_comment_without_rule: $pyright.reportIgnoreCommentWithoutRule
+            ruff_per_file_ignores: ($ruff.lint."per-file-ignores"? | default {})
+            basedpyright: $pyright
+            ast_grep_rules: (do $rule_files python)
         }
         go: {
+            default: $golangci.linters.default
             linters_enable: $golangci.linters.enable
+            run: $golangci.run
+            exclusions: $golangci.linters.exclusions
+            nolintlint: $golangci.linters.settings.nolintlint
+            errcheck: $golangci.linters.settings.errcheck
             gocritic_settings_sha256: ($golangci.linters.settings.gocritic | to json | hash sha256 | str trim)
             staticcheck_settings_sha256: ($golangci.linters.settings.staticcheck | to json | hash sha256 | str trim)
+            ast_grep_rules: (do $rule_files go)
         }
         typescript: {
-            skip_lib_check: $typescript.compilerOptions.skipLibCheck
-            composite: $typescript.compilerOptions.composite
-            incremental: $typescript.compilerOptions.incremental
+            compiler_options: $typescript.compilerOptions
+            oxlint_plugins: $oxlint.plugins
+            oxlint_overrides: $oxlint.overrides
             rules: $oxlint.rules
+            ast_grep_rules: (do $rule_files typescript)
         }
+    }
+    # Regenerate with QUALITY_GATE_UPDATE_SNAPSHOT=1 and review the diff.
+    if ($env.QUALITY_GATE_UPDATE_SNAPSHOT? | default '') == '1' {
+        $actual | to json --indent 2 | $in + (char nl) | save --force $POLICY_SNAPSHOT
+        return
     }
     assert equal $actual $snapshot
 }
@@ -837,7 +883,7 @@ def test-go-app-runs-real-static-checks [] {
         write-fixture-file $root main.go "package main\n\nfunc main() {}\n"
         let passing = run-quality-gate-app $root quality-gate-go ci
         assert equal $passing.exit_code 0
-        assert ($passing.stdout | str contains 'Summary: all')
+        assert (($passing.stdout) =~ 'Summary: all [1-9][0-9]* checks passed') 'at least one check must have run'
         let files = glob ($root | path join '*') | each {|file| $file | path basename }
         assert ($files | all {|file| $file in ['go.mod' 'main.go'] })
 
@@ -865,7 +911,7 @@ def test-python-app-runs-real-lint-checks [] {
         assert equal $lock.exit_code 0
         let result = run-quality-gate-app $root quality-gate-python category lint
         assert equal $result.exit_code 0
-        assert ($result.stdout | str contains 'Summary: all')
+        assert (($result.stdout) =~ 'Summary: all [1-9][0-9]* checks passed') 'at least one check must have run'
 
         let bin = $root | path join bin
         let log = $root | path join commands.log
@@ -873,7 +919,7 @@ def test-python-app-runs-real-lint-checks [] {
         let basedpyright = run-quality-gate-with-env $root {
             PATH: ($env.PATH | prepend $bin)
             QUALITY_GATE_FAKE_LOG: $log
-        } lint python basedpyright
+        } typecheck python basedpyright
         assert equal $basedpyright.exit_code 0
         let command = open --raw $log
         assert ($command | str contains '--project')
@@ -926,7 +972,7 @@ def test-python-typecheck-resolves-venv-dependencies [] {
 
         let result = run-quality-gate-app $root quality-gate-python category typecheck
         assert equal $result.exit_code 0
-        assert ($result.stdout | str contains 'Summary: all')
+        assert (($result.stdout) =~ 'Summary: all [1-9][0-9]* checks passed') 'at least one check must have run'
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -951,7 +997,7 @@ def test-python-typecheck-resolves-first-party-imports [] {
         assert equal $lock.exit_code 0
         let result = run-quality-gate-app $root quality-gate-python category typecheck
         assert equal $result.exit_code 0
-        assert ($result.stdout | str contains 'Summary: all')
+        assert (($result.stdout) =~ 'Summary: all [1-9][0-9]* checks passed') 'at least one check must have run'
         assert not (($root | path join .quality-gate-pyrightconfig.json) | path exists)
     } catch {|error|
         rm --recursive --force $root
@@ -971,7 +1017,7 @@ def test-typescript-app-runs-real-format-and-lint-checks [] {
         assert equal $formatting.exit_code 0
         let linting = run-quality-gate-app $root quality-gate-typescript category lint
         assert equal $linting.exit_code 0
-        assert ($linting.stdout | str contains 'Summary: all')
+        assert (($linting.stdout) =~ 'Summary: all [1-9][0-9]* checks passed') 'at least one check must have run'
     } catch {|error|
         rm --recursive --force $root
         error make {msg: $error.msg}
@@ -1010,12 +1056,13 @@ def test-typescript-solution-references-preserve-project-options [] {
         write-fixture-file $root tsconfig.json "{\n  \"files\": [],\n  \"references\": [{\"path\": \"./tsconfig.app.json\"}]\n}\n"
         write-fixture-file $root tsconfig.app.json "{\n  \"compilerOptions\": {\n    \"jsx\": \"react-jsx\",\n    \"target\": \"ES2022\",\n    \"module\": \"ESNext\"\n  },\n  \"include\": [\"src\"]\n}\n"
         write-fixture-file $root src/main.tsx "export const value = <div />;\n"
-        write-executable ($bin | path join tsc) ([
+        write-executable ($bin | path join tsc-show-config) ([
             '#!/usr/bin/env nu'
             'def --wrapped main [...args: string] {'
             '    let index = ($args | enumerate | where item == "--project" | get index | first)'
             '    let project = $args | get ($index + 1)'
-            '    if ($project | str ends-with "tsconfig.app.json") {'
+            '    let source = (open $project | get --optional extends | default $project)'
+            '    if ($source | str ends-with "tsconfig.app.json") {'
             "        print '{\"compilerOptions\":{\"jsx\":\"react-jsx\",\"target\":\"es2022\",\"module\":\"esnext\"},\"files\":[\"./src/main.tsx\"]}'"
             '    } else {'
             "        print '{\"compilerOptions\":{},\"references\":[{\"path\":\"./tsconfig.app.json\"}]}'"
@@ -1028,6 +1075,7 @@ def test-typescript-solution-references-preserve-project-options [] {
         mkdir $captured
         write-executable ($root | path join node_modules .bin tsc) ([
             '#!/bin/sh'
+            $'if [ "$1" = "--showConfig" ]; then exec "($bin | path join tsc-show-config)" "$@"; fi'
             'while [ "$#" -gt 0 ]; do'
             '  if [ "$1" = "--project" ]; then project="$2"; fi'
             '  shift'
@@ -1051,4 +1099,100 @@ def test-typescript-solution-references-preserve-project-options [] {
         error make {msg: $error.msg}
     }
     rm --recursive --force $root
+}
+
+@test
+def test-detect-appends-to-the-file-the-adapter-already-wrote [] {
+    let root = make-fixture
+    try {
+        ^git -C $root init --quiet
+        write-fixture-file $root go.mod "module example.com/fixture\n\ngo 1.23.0\n"
+        let detection = $root | path join detection.env
+        let pinned = 'QUALITY_GATE_PIPELINE_REVISION=0123456789abcdef0123456789abcdef01234567'
+        $'($pinned)(char nl)' | save $detection
+        let result = run-quality-gate-with-env $root {QUALITY_GATE_DETECTION_FILE: $detection} detect
+        assert equal $result.exit_code 0 $result.stderr
+        let lines = open --raw $detection | lines
+        assert ($pinned in $lines) $'the revision pinned for the pipeline was overwritten: ($lines | to nuon)'
+        assert ('QUALITY_GATE_HAS_GO=true' in $lines)
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+def python-hook-fixture [root: path, ruff_code: int]: nothing -> path {
+    ^git -C $root init --quiet
+    write-fixture-file $root pyproject.toml "[project]\nname = 'fixture'\nversion = '0.1.0'\nrequires-python = '>=3.11'\ndependencies = []\n\n[tool.uv]\npackage = false\n"
+    write-fixture-file $root uv.lock "version = 1\n"
+    write-fixture-file $root app.py "value = 1\n"
+    let bin = $root | path join bin
+    write-exit-tool $bin ruff $ruff_code 'ruff output'
+    for name in [complexipy ast-grep basedpyright uv] {
+        write-exit-tool $bin $name 0
+    }
+    $bin
+}
+
+@test
+def test-hook-fails-the-commit-when-a-check-fails [] {
+    let root = make-fixture
+    try {
+        let bin = python-hook-fixture $root 1
+        let result = run-quality-gate-with-env $root {PATH: ($env.PATH | prepend $bin)} hook python
+        assert equal $result.exit_code 1 $'($result.stdout)\n($result.stderr)'
+        assert (($result.stdout + $result.stderr) | str contains 'python hook checks failed: 2 of 5 checks failed') ($result.stdout + $result.stderr)
+        assert ($result.stdout | str contains '`format:python:ruff` | `finding`')
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
+def test-hook-lets-the-commit-through-when-every-check-passes [] {
+    let root = make-fixture
+    try {
+        let bin = python-hook-fixture $root 0
+        let result = run-quality-gate-with-env $root {PATH: ($env.PATH | prepend $bin)} hook python
+        assert equal $result.exit_code 0 $'($result.stdout)\n($result.stderr)'
+        assert ($result.stdout | str contains 'Summary: all 5 checks passed.') $result.stdout
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
+def test-hook-in-report-mode-warns-without-blocking [] {
+    let root = make-fixture
+    try {
+        let bin = python-hook-fixture $root 1
+        let result = run-quality-gate-with-env $root {
+            PATH: ($env.PATH | prepend $bin)
+            QUALITY_GATE_MODE: report
+            QUALITY_GATE_REPORT_UNTIL: ((date now) + 10day | format date '%Y-%m-%d')
+        } hook python
+        assert equal $result.exit_code 0 $'($result.stdout)\n($result.stderr)'
+        assert (($result.stdout + $result.stderr) | str contains 'REPORT-ONLY: python hook checks found 2 of 5 failed checks')
+    } catch {|error|
+        rm --recursive --force $root
+        error make {msg: $error.msg}
+    }
+    rm --recursive --force $root
+}
+
+@test
+def test-the-dev-shell-runs-the-tools-the-apps-ship [] {
+    # `open` does not know the .lock extension and would return text.
+    let flake = open --raw ($FLAKE | path join flake.lock) | from json
+    let devenv = open --raw ($FLAKE | path join devenv.lock) | from json
+    let shipped = $flake.nodes | get nixpkgs-quality-gate | get locked.rev
+    let tested = $devenv.nodes | get --optional nixpkgs-quality-gate | get --optional locked.rev
+    assert equal $tested $shipped 'devenv.lock and flake.lock must pin the same nixpkgs-quality-gate: the self-test would otherwise run other tool versions than the released apps'
+    let declared = open ($FLAKE | path join devenv.yaml) | get inputs.nixpkgs-quality-gate.url
+    assert ($declared | str ends-with $shipped) $'devenv.yaml must name the revision of flake.lock, got ($declared)'
 }

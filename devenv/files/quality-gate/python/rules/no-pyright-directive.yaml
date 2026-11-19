@@ -1,0 +1,11 @@
+id: no-pyright-directive
+language: Python
+severity: error
+message: >
+  A pyright comment directive can change the type-checking mode or switch
+  rules off for the whole file, which removes the central Quality Gate policy.
+  Only `# pyright: ignore[rule]` is accepted. Fix the type error or suppress
+  that one line with the rule name.
+rule:
+  kind: comment
+  regex: '^#\s*(based)?pyright:\s*([^i\s]|i[^g])'

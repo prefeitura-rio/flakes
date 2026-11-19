@@ -1,9 +1,15 @@
 /.github/CODEOWNERS @phrmendes @gabriel-milan
 /.github/workflows/ @phrmendes @gabriel-milan
+/.github/dependabot.yml @phrmendes @gabriel-milan
 /devenv/files/quality-gate/ @phrmendes @gabriel-milan
 /devenv/quality-gate.nix @phrmendes @gabriel-milan
+/devenv.nix @phrmendes @gabriel-milan
+/devenv.yaml @phrmendes @gabriel-milan
+/devenv.lock @phrmendes @gabriel-milan
 /flake.nix @phrmendes @gabriel-milan
 /flake.lock @phrmendes @gabriel-milan
+/overlays.nix @phrmendes @gabriel-milan
+/pkgs/complexipy/ @phrmendes @gabriel-milan
 /release/ @phrmendes @gabriel-milan
-/tests/snapshots/ @phrmendes @gabriel-milan
-/tests/fixtures/ @phrmendes @gabriel-milan
+/docs/runbooks/ @phrmendes @gabriel-milan
+/tests/ @phrmendes @gabriel-milan

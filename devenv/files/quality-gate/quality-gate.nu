@@ -7,6 +7,9 @@ const IGNORED_DIRECTORY_NAMES = [
     .git node_modules vendor .venv __pycache__ .cache
     dist build out .next .nuxt coverage
 ]
+const GENERATED_DIRECTORY_NAMES = [
+    .git node_modules vendor .venv __pycache__ .cache .next .nuxt coverage
+]
 const IGNORED_TEST_PATH_NAMES = [
     .git node_modules vendor .venv __pycache__ .cache dist build out .next .nuxt coverage
 ]
@@ -81,7 +84,7 @@ def marker-files-from-git [scope: path]: nothing -> oneof<list<path>, nothing> {
     }
     let git_root = $root_result.stdout | str trim | path expand
     let files_result = (do {
-        ^git -C $git_root ls-files --cached --others --exclude-standard
+        ^git -c core.excludesFile=/dev/null -C $git_root ls-files --cached --others --exclude-standard
     } | complete)
     if $files_result.exit_code != 0 {
         return null
@@ -131,8 +134,11 @@ def project-directories []: nothing -> list<string> {
         $directories
     } else {
         $directories | where {|directory|
+            let deeper = $directories | where {|other| $other | str starts-with $'($directory)/' }
             $changed | any {|file|
-                $file == $directory or ($file | str starts-with ($'($directory)/'))
+                let inside = $file == $directory or ($file | str starts-with ($'($directory)/'))
+                let owned_deeper = $deeper | any {|other| $file == $other or ($file | str starts-with ($'($other)/')) }
+                $inside and not $owned_deeper
             }
         }
     }
@@ -330,7 +336,7 @@ def git-repository-files [scope: path]: nothing -> list<string> {
         return []
     }
     let result = (do {
-        ^git -C $root ls-files --cached --others --exclude-standard
+        ^git -c core.excludesFile=/dev/null -C $root ls-files --cached --others --exclude-standard
     } | complete)
     if $result.exit_code != 0 {
         []
@@ -357,7 +363,7 @@ def git-excluded-relative [paths: list<string>]: nothing -> list<string> {
         let exclude = $temporary | path join .git info exclude
         $patterns | str join (char nl) | save --force $exclude
         let input = ($paths | str join (char nl)) + (char nl)
-        let result = ($input | ^git -C $temporary check-ignore --no-index --stdin | complete)
+        let result = ($input | ^git -c core.excludesFile=/dev/null -C $temporary check-ignore --no-index --stdin | complete)
         if $result.exit_code == 0 {
             $result.stdout | lines | where {|path| ($path | str trim | is-not-empty) }
         } else {
@@ -410,7 +416,19 @@ def quality-gate-path-excluded [candidate: path]: nothing -> bool {
     (git-excluded-relative [$relative $'($relative)/'] | is-not-empty)
 }
 
-def quality-gate-files [extensions: list<string>]: nothing -> list<string> {
+# Projects of `language` that live inside the current project. Their files are
+# checked as part of that nested project, not again as part of the outer one.
+def nested-project-directories [language: string]: nothing -> list<path> {
+    let scope = (project)
+    let markers = (marker-files-from-git $scope) | default (marker-files-from-glob $scope)
+    $markers
+    | each {|file| $file | path dirname }
+    | uniq
+    | where {|directory| $directory != $scope and not (ignored-project-path $directory $scope) }
+    | where {|directory| $language in (project-languages $directory) }
+}
+
+def quality-gate-files [extensions: list<string>, --language: string = '']: nothing -> list<string> {
     let scope = project
     let root = quality-gate-root
     let tracked = git-repository-files $scope
@@ -422,12 +440,17 @@ def quality-gate-files [extensions: list<string>]: nothing -> list<string> {
     }
     let excluded = git-excluded-relative ($files | each {|file| $file | path relative-to $root })
         | each {|file| $root | path join $file | path expand }
+    let nested = if ($language | is-empty) { [] } else { nested-project-directories $language }
     $files
     | where {|file|
         let extension = (($file | path parse).extension? | default '' | str lowercase)
         $extension in $extensions
     }
     | where {|file| $file not-in $excluded }
+    | where {|file|
+        not (($file | path relative-to $scope | path split) | any {|part| $part in $GENERATED_DIRECTORY_NAMES })
+    }
+    | where {|file| not ($nested | any {|directory| $file | str starts-with $'($directory)/' }) }
     | each {|file| $file | path relative-to $scope }
 }
 
@@ -437,22 +460,66 @@ def exclusion-arguments [flag: string]: nothing -> list<string> {
     | flatten
 }
 
+# Directories from `start` up to the repository root, nearest first. A member of
+# an npm, pnpm or uv workspace has no lockfile, `.node-version` or `node_modules`
+# of its own, so these are looked up towards the root.
+def ancestor-directories [start: path]: nothing -> list<path> {
+    let root = quality-gate-root
+    mut current = $start | path expand
+    mut directories = [$current]
+    while $current != $root and ($current | str starts-with $'($root)/') {
+        $current = ($current | path dirname)
+        $directories = ($directories | append $current)
+    }
+    $directories
+}
+
+def find-up [start: path, names: list<string>]: nothing -> oneof<path, nothing> {
+    for directory in (ancestor-directories $start) {
+        for name in $names {
+            let candidate = $directory | path join $name
+            if ($candidate | path exists) {
+                return $candidate
+            }
+        }
+    }
+    null
+}
+
+def quality-gate-cache-dir []: nothing -> path {
+    let base = $env.XDG_CACHE_HOME? | default ($env.HOME? | default '/tmp' | path join .cache)
+    $base | path join quality-gate
+}
+
+# uv and basedpyright use an environment that belongs to the Quality Gate. It
+# lives outside the repository, so `uv sync` never prunes the developer's own
+# `.venv` and nothing is left in the working tree.
+def python-venv-dir []: nothing -> path {
+    let key = $env.PWD | path expand | hash sha256 | str substring 0..15
+    (quality-gate-cache-dir) | path join venvs $key
+}
+
 def sync-python []: nothing -> nothing {
     if not ('pyproject.toml' | path exists) {
-        error make {msg: 'Python typecheck/tests require pyproject.toml managed by uv; setup.py-only projects are unsupported for dependency-aware checks.'}
+        error make {msg: 'finding: Python typecheck/tests require pyproject.toml managed by uv; setup.py-only projects are unsupported for dependency-aware checks.'}
     }
-    if not ('uv.lock' | path exists) {
-        error make {msg: 'Python typecheck/tests require uv.lock. Run `uv lock` and commit the lockfile.'}
+    let lockfile = find-up $env.PWD [uv.lock]
+    if $lockfile == null {
+        error make {msg: 'finding: Python typecheck/tests require uv.lock. Run `uv lock` and commit the lockfile.'}
     }
 
-    let marker = '.venv/.quality-gate-uv-sync'
-    let fingerprint = ([ (open --raw pyproject.toml) (open --raw uv.lock) ] | str join (char nul) | hash sha256 | str trim)
+    let venv = python-venv-dir
+    let marker = $venv | path join .quality-gate-uv-sync
+    let pinned = if ('.python-version' | path exists) { open --raw .python-version } else { '' }
+    let fingerprint = ([ (open --raw pyproject.toml) (open --raw $lockfile) $pinned ] | str join (char nul) | hash sha256 | str trim)
     let current = if ($marker | path exists) { open --raw $marker | str trim } else { '' }
     if $current == $fingerprint {
         log info 'uv dependencies are up to date; skipping uv sync.'
     } else {
-        run-check 'uv sync' uv [sync --locked --all-groups] --finding-codes []
-        mkdir .venv
+        with-env {UV_PROJECT_ENVIRONMENT: $venv} {
+            run-check 'uv sync' uv [sync --locked --all-groups] --finding-codes []
+        }
+        mkdir $venv
         $fingerprint | save --force $marker
     }
 }
@@ -478,7 +545,7 @@ def format-python [] {
     if not (python-project) { return }
     warn-local-quality-config ['ruff.toml' '.ruff.toml']
 
-    let files = quality-gate-files [py pyi]
+    let files = quality-gate-files [py pyi] --language python
     if ($files | is-empty) {
         log warning 'No Python source files remain after .quality-gate/exclude; skipping format.'
         return
@@ -502,7 +569,7 @@ def format-python [] {
 def lint-python [] {
     if not (python-project) { return }
     warn-local-quality-config ['ruff.toml' '.ruff.toml']
-    let files = quality-gate-files [py pyi]
+    let files = quality-gate-files [py pyi] --language python
     if ($files | is-empty) {
         log warning 'No Python source files remain after .quality-gate/exclude; skipping lint.'
         return
@@ -514,7 +581,7 @@ def lint-python [] {
 
 def lint-python-complexipy [] {
     if not (python-project) { return }
-    let files = quality-gate-files [py pyi]
+    let files = quality-gate-files [py pyi] --language python
     if ($files | is-empty) {
         log warning 'No Python source files remain after .quality-gate/exclude; skipping complexity.'
         return
@@ -544,7 +611,7 @@ def lint-python-complexipy [] {
     }
 }
 
-def lint-python-basedpyright [] {
+def typecheck-python-basedpyright [] {
     if not (python-project) { return }
     sync-python
     warn-local-quality-config ['pyrightconfig.json']
@@ -569,8 +636,8 @@ def python-quality-config []: nothing -> path {
     let config = project | path join '.quality-gate-pyrightconfig.json'
     rm --force $config
     $central
-    | upsert venvPath '.'
-    | upsert venv '.venv'
+    | upsert venvPath (python-venv-dir | path dirname)
+    | upsert venv (python-venv-dir | path basename)
     | upsert exclude (($PYRIGHT_DEFAULT_EXCLUDES ++ $excludes) | uniq)
     | to json
     | save --force $config
@@ -690,7 +757,7 @@ def go-project []: nothing -> bool {
 
 def format-go-gofumpt [] {
     if not (go-project) { return }
-    let files = quality-gate-files [go]
+    let files = quality-gate-files [go] --language go
     if ($files | is-empty) {
         log warning 'No Go source files remain after .quality-gate/exclude; skipping format.'
         return
@@ -711,7 +778,7 @@ def format-go-gofumpt [] {
 
 def format-go-goimports [] {
     if not (go-project) { return }
-    let files = quality-gate-files [go]
+    let files = quality-gate-files [go] --language go
     if ($files | is-empty) {
         log warning 'No Go source files remain after .quality-gate/exclude; skipping imports format.'
         return
@@ -741,6 +808,10 @@ def lint-go-golangci [] {
     }
 }
 
+def regex-escape [value: string]: nothing -> string {
+    $value | str replace --all --regex '([\\.+*?()|\[\]{}^$])' '\$1'
+}
+
 def go-quality-config []: nothing -> path {
     let central = open $env.QUALITY_GATE_GO_CONFIG
     let scope = project
@@ -749,7 +820,7 @@ def go-quality-config []: nothing -> path {
     let paths = git-excluded-relative (
         $files | each {|file| $file | path relative-to $root }
     ) | each {|path| $root | path join $path | path expand | path relative-to $scope }
-        | each {|path| $path | str replace --all '.' '\.' }
+        | each {|path| $'^(regex-escape $path)$' }
     let exclusions = $central.linters.exclusions | upsert paths (
         (($central.linters.exclusions.paths? | default []) ++ $paths) | uniq
     )
@@ -800,18 +871,24 @@ def go-packages []: nothing -> list<string> {
     | get package
 }
 
+def node-lockfile [start: path = .]: nothing -> oneof<path, nothing> {
+    find-up ($start | path expand) [pnpm-lock.yaml package-lock.json]
+}
+
 def node-manager []: nothing -> string {
-    if ('pnpm-lock.yaml' | path exists) {
-        let package = open package.json
+    let lockfile = node-lockfile
+    if $lockfile == null {
+        error make {msg: 'finding: No lockfile found. Commit package-lock.json (npm) or pnpm-lock.yaml (pnpm), at the project or at its workspace root.'}
+    }
+    if ($lockfile | path basename) == 'pnpm-lock.yaml' {
+        let package = open ($lockfile | path dirname | path join package.json)
         let declaration = ($package.packageManager? | default '')
         if (($declaration | describe) != string) or not ($declaration =~ '^pnpm@[0-9]+(\.[0-9]+)*(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$') {
-            error make {msg: 'pnpm-lock.yaml requires package.json packageManager: pnpm@<version>.'}
+            error make {msg: 'finding: pnpm-lock.yaml requires package.json packageManager: pnpm@<version>.'}
         }
         'pnpm'
-    } else if ('package-lock.json' | path exists) {
-        'npm'
     } else {
-        error make {msg: 'No lockfile found. Commit package-lock.json (npm) or pnpm-lock.yaml (pnpm).'}
+        'npm'
     }
 }
 
@@ -826,36 +903,45 @@ def node-project []: nothing -> bool {
 
 def install-node-dependencies []: nothing -> nothing {
     let manager = node-manager
-    let lockfile = if $manager == npm { 'package-lock.json' } else { 'pnpm-lock.yaml' }
+    let lockfile = node-lockfile
+    let lock_directory = $lockfile | path dirname
+    let declared_version = find-up $env.PWD [.node-version]
     let fingerprint = [
-        (open --raw package.json)
+        (open --raw ($lock_directory | path join package.json))
         (open --raw $lockfile)
-        (if ('.node-version' | path exists) { open --raw .node-version } else { $env.QUALITY_GATE_NODE_VERSION? | default '' })
+        (if $declared_version != null { open --raw $declared_version } else { $env.QUALITY_GATE_NODE_VERSION? | default '' })
     ] | str join (char nul) | hash sha256 | str trim
-    let marker = 'node_modules/.quality-gate-dependencies'
+    let marker = $lock_directory | path join node_modules .quality-gate-dependencies
     let current = if ($marker | path exists) { open --raw $marker | str trim } else { '' }
     if $current == $fingerprint {
         log info 'Node dependencies are up to date; skipping install.'
         return
     }
-    if $manager == npm {
-        run-check 'npm ci' npm [ci] --finding-codes []
-    } else {
-        run-check 'pnpm install' pnpm [install --frozen-lockfile] --finding-codes []
+    let project_directory = $env.PWD
+    cd $lock_directory
+    try {
+        if $manager == npm {
+            run-check 'npm ci' npm [ci] --finding-codes []
+        } else {
+            run-check 'pnpm install' pnpm [install --frozen-lockfile] --finding-codes []
+        }
+        mkdir ($lock_directory | path join node_modules)
+        $fingerprint | save --force $marker
+    } finally {
+        cd $project_directory
     }
-    mkdir node_modules
-    $fingerprint | save --force $marker
 }
 
 def declared-node-major []: nothing -> string {
     let configured = ($env.QUALITY_GATE_NODE_VERSION? | default '')
-    let declared = if ('.node-version' | path exists) {
-        open --raw .node-version | str trim
+    let version_file = find-up $env.PWD [.node-version]
+    let declared = if $version_file != null {
+        open --raw $version_file | str trim
     } else {
         $configured | str trim
     }
     if ($declared | is-empty) {
-        error make {msg: 'Missing .node-version for TypeScript typecheck. Add the Node.js major version used by the project.'}
+        error make {msg: 'finding: Missing .node-version for TypeScript typecheck. Add the Node.js major version used by the project.'}
     }
     $declared | str replace --regex '^v' '' | split row '.' | first
 }
@@ -877,11 +963,14 @@ def with-node-runtime [body: closure] {
 }
 
 def local-node-bin [name: string]: nothing -> string {
-    let binary = $env.PWD | path join node_modules .bin $name
-    if not ($binary | path exists) {
-        error make {msg: $'engine: ($name) is not installed in the project. Add it to devDependencies and commit the lockfile.'}
+    let found = ancestor-directories $env.PWD
+        | each {|directory| $directory | path join node_modules .bin $name }
+        | where {|binary| $binary | path exists }
+        | get --optional 0
+    if $found == null {
+        error make {msg: $'finding: ($name) is not installed in the project. Add it to devDependencies and commit the lockfile.'}
     }
-    $binary
+    $found
 }
 
 def validate-node-version []: nothing -> nothing {
@@ -942,7 +1031,7 @@ def typescript-react-project []: nothing -> bool {
 def format-typescript [] {
     if not (node-project) { return }
     warn-local-quality-config ['.oxfmtrc.json' '.oxfmtrc.jsonc' 'oxfmt.config.js' 'oxfmt.config.mjs' 'oxfmt.config.ts' 'oxfmt.config.mts']
-    let files = quality-gate-files [ts tsx mts cts vue]
+    let files = quality-gate-files [ts tsx mts cts vue] --language typescript
     if ($files | is-empty) {
         log warning 'No TypeScript source files remain after .quality-gate/exclude; skipping format.'
         return
@@ -962,7 +1051,7 @@ def format-typescript [] {
 def lint-typescript-oxlint [] {
     if not (node-project) { return }
     warn-local-quality-config ['.oxlintrc.json' '.oxlintrc.yaml' '.oxlintrc.yml' 'oxlint.config.js' 'oxlint.config.mjs' 'oxlint.config.ts']
-    let source_files = quality-gate-files [ts tsx mts cts vue]
+    let source_files = quality-gate-files [ts tsx mts cts vue] --language typescript
     if ($source_files | is-empty) {
         log warning 'No TypeScript source files remain after .quality-gate/exclude; skipping lint.'
         return
@@ -979,28 +1068,28 @@ def lint-typescript-oxlint [] {
     run-check 'oxlint' oxlint $arguments --engine-markers ['Failed to parse oxlint configuration']
 }
 
-def lint-typescript-typecheck [] {
+def typecheck-typescript [] {
     if not (node-project) { return }
     with-node-runtime { typescript-typecheck }
 }
 
-# tsc and vue-tsc exit with 1 or 2 when the code has type errors; any other
-# code means the compiler itself could not run.
 def typescript-typecheck [] {
     install-node-dependencies
     let manager = node-manager
     let framework = typescript-framework
     let checker = if $framework in [vue nuxt] { 'vue-tsc' } else { 'tsc' }
     let binary = local-node-bin $checker
-    let configs = (typescript-quality-configs)
-    try {
-        if $framework == nuxt {
-            if $manager == npm {
-                run-check 'nuxt prepare' npm [exec --no -- nuxt prepare]
-            } else {
-                run-check 'nuxt prepare' pnpm [exec nuxt prepare]
-            }
+    # Nuxt generates .nuxt/tsconfig.json, which the project config extends, so it
+    # must exist before any config is expanded.
+    if $framework == nuxt {
+        if $manager == npm {
+            run-check 'nuxt prepare' npm [exec --no -- nuxt prepare]
+        } else {
+            run-check 'nuxt prepare' pnpm [exec nuxt prepare]
         }
+    }
+    let configs = (typescript-quality-configs $binary)
+    try {
         for config in $configs {
             run-check $checker $binary [--noEmit --project $config] --finding-codes [1 2]
         }
@@ -1011,15 +1100,38 @@ def typescript-typecheck [] {
     }
 }
 
-def typescript-show-config [config: path]: nothing -> record {
-    let result = capture tsc [--showConfig --project $config]
+# `vue-tsc --showConfig` lists the `.vue` files and `tsc --showConfig` does not,
+# so the expansion is done with the compiler the project is checked with.
+def typescript-show-config [config: path, binary: string]: nothing -> record {
+    let result = capture $binary [--showConfig --project $config]
     if $result.exit_code != 0 {
-        error make {msg: $'Could not expand TypeScript config ($config): ($result.stderr | str trim)'}
+        error make {msg: $'finding: Could not expand TypeScript config ($config): ($result.stderr | str trim)($result.stdout | str trim)'}
     }
     try {
         $result.stdout | from json
     } catch {|error|
-        error make {msg: $'Could not parse TypeScript config ($config): ($error.msg)'}
+        error make {msg: $'finding: Could not parse TypeScript config ($config): ($error.msg)'}
+    }
+}
+
+# The files of a project come from its own `files` and `include`, but a local
+# `exclude` must not take files out of the Quality Gate. The config is expanded
+# once more through a derived config, kept beside the original so relative paths
+# resolve the same way, that replaces `exclude` by the compiler defaults.
+def typescript-effective-config [config: path, binary: string]: nothing -> record {
+    let original = typescript-show-config $config $binary
+    let out_directory = $original.compilerOptions?.outDir?
+    let excludes = ['**/node_modules' '**/bower_components' '**/jspm_packages']
+        | append (if $out_directory == null { [] } else { [$out_directory] })
+    let widened = (mktemp --tmpdir-path ($config | path dirname) '.quality-gate-tsconfig.XXXXXX.json' | str trim)
+    try {
+        {extends: $'./($config | path basename)', exclude: $excludes} | to json | save --force $widened
+        let effective = typescript-show-config $widened $binary
+        rm --force $widened
+        $effective | upsert references ($original.references? | default [])
+    } catch {|error|
+        rm --force $widened
+        error make $error
     }
 }
 
@@ -1031,8 +1143,8 @@ def typescript-project-file [base: path, file: string]: nothing -> path {
     }
 }
 
-def typescript-reference-sources [config: path]: nothing -> list<record> {
-    let effective = typescript-show-config $config
+def typescript-reference-sources [config: path, binary: string]: nothing -> list<record> {
+    let effective = typescript-effective-config $config $binary
     let source = {
         base: ($config | path dirname)
         config: $config
@@ -1042,13 +1154,13 @@ def typescript-reference-sources [config: path]: nothing -> list<record> {
         | each {|reference|
             typescript-project-file ($config | path dirname) $reference.path
         }
-    [$source] ++ ($references | each {|reference| typescript-reference-sources $reference } | flatten)
+    [$source] ++ ($references | each {|reference| typescript-reference-sources $reference $binary } | flatten)
 }
 
-def typescript-quality-configs []: nothing -> list<path> {
+def typescript-quality-configs [binary: string]: nothing -> list<path> {
     let central = (open $env.QUALITY_GATE_TYPESCRIPT_CONFIG)
     let root_config = $env.PWD | path join 'tsconfig.json' | path expand
-    let root = (typescript-show-config $root_config)
+    let root = (typescript-effective-config $root_config $binary)
     let references = ($root.references? | default [])
     let root_source = {
         base: ($root_config | path dirname)
@@ -1059,7 +1171,7 @@ def typescript-quality-configs []: nothing -> list<path> {
         | each {|reference|
             typescript-reference-sources (
                 typescript-project-file ($root_config | path dirname) $reference.path
-            )
+            ) $binary
         }
         | flatten
     let sources = if ($references | is-empty) {
@@ -1114,7 +1226,9 @@ def typescript-file-excluded [file: path]: nothing -> bool {
 def test-python [] {
     require-local-tests python
     sync-python
-    run-check 'uv pytest' uv [run --locked pytest] --any-failure-is-finding
+    with-env {UV_PROJECT_ENVIRONMENT: (python-venv-dir)} {
+        run-check 'uv pytest' uv [run --locked pytest] --any-failure-is-finding
+    }
 }
 
 def test-go [] {
@@ -1125,7 +1239,7 @@ def test-go [] {
 def test-typescript [] {
     require-local-tests typescript
     if not (package-has-script test) {
-        error make {msg: 'TypeScript projects must define scripts.test in package.json.'}
+        error make {msg: 'finding: TypeScript projects must define scripts.test in package.json.'}
     }
     with-node-runtime {
         install-node-dependencies
@@ -1157,9 +1271,9 @@ def checks-for-category [category: string, language: string]: nothing -> list<li
         [strlint python] => [[lint python strlint]]
         [strlint go] => [[lint go strlint]]
         [strlint typescript] => [[lint typescript strlint]]
-        [typecheck python] => [[lint python basedpyright]]
+        [typecheck python] => [[typecheck python basedpyright]]
         [typecheck go] => [[typecheck go build]]
-        [typecheck typescript] => [[lint typescript typecheck]]
+        [typecheck typescript] => [[typecheck typescript tsc]]
         [test python] => [[test python pytest]]
         [test go] => [[test go test]]
         [test typescript] => [[test typescript test]]
@@ -1173,8 +1287,8 @@ def checks-for-language [language: string]: nothing -> list<list<string>> {
             [format python ruff]
             [lint python ruff]
             [lint python complexipy]
-            [lint python basedpyright]
             [lint python strlint]
+            [typecheck python basedpyright]
         ]
         'go' => [
             [format go gofumpt]
@@ -1188,7 +1302,7 @@ def checks-for-language [language: string]: nothing -> list<list<string>> {
             [format typescript oxfmt]
             [lint typescript oxlint]
             [lint typescript strlint]
-            [lint typescript typecheck]
+            [typecheck typescript tsc]
         ]
         _ => []
     }
@@ -1276,43 +1390,48 @@ def run-fix-check [name: string, command: string, arguments: list<string>] {
 def fix-language [language: string] {
     let normalized = normalize-language $language
     let scope = (project)
+    let root = quality-gate-root
     cd $scope
     for directory in (project-directories) {
         if $normalized not-in (project-languages $directory) {
             continue
         }
-        cd $directory
-        match $normalized {
-            python => {
-                let files = quality-gate-files [py pyi]
-                if ($files | is-empty) {
-                    log warning 'No Python source files remain after .quality-gate/exclude; skipping fixes.'
-                } else {
-                    run-fix-check 'ruff format' ruff (
-                        [format --config $env.QUALITY_GATE_RUFF_CONFIG] ++ $files
-                    )
-                    run-fix-check 'ruff check --fix' ruff (
-                        [check --config $env.QUALITY_GATE_RUFF_CONFIG --fix] ++ $files
-                    )
+        # Each project is fixed with the scope it is checked with, so the file
+        # lists, exclusions and nested projects are those of that project.
+        with-env {QUALITY_GATE_PROJECT_DIR: $directory, QUALITY_GATE_ROOT: $root} {
+            cd $directory
+            match $normalized {
+                python => {
+                    let files = quality-gate-files [py pyi] --language python
+                    if ($files | is-empty) {
+                        log warning 'No Python source files remain after .quality-gate/exclude; skipping fixes.'
+                    } else {
+                        run-fix-check 'ruff format' ruff (
+                            [format --config $env.QUALITY_GATE_RUFF_CONFIG] ++ $files
+                        )
+                        run-fix-check 'ruff check --fix' ruff (
+                            [check --config $env.QUALITY_GATE_RUFF_CONFIG --fix] ++ $files
+                        )
+                    }
                 }
-            }
-            go => {
-                let files = quality-gate-files [go]
-                if ($files | is-empty) {
-                    log warning 'No Go source files remain after .quality-gate/exclude; skipping fixes.'
-                } else {
-                    run-fix-check 'gofumpt' gofumpt ([-w] ++ $files)
-                    run-fix-check 'goimports' goimports ([-w] ++ $files)
+                go => {
+                    let files = quality-gate-files [go] --language go
+                    if ($files | is-empty) {
+                        log warning 'No Go source files remain after .quality-gate/exclude; skipping fixes.'
+                    } else {
+                        run-fix-check 'gofumpt' gofumpt ([-w] ++ $files)
+                        run-fix-check 'goimports' goimports ([-w] ++ $files)
+                    }
                 }
-            }
-            typescript => {
-                let files = quality-gate-files [ts tsx mts cts vue]
-                if ($files | is-empty) {
-                    log warning 'No TypeScript source files remain after .quality-gate/exclude; skipping fixes.'
-                } else {
-                    run-fix-check 'oxfmt' oxfmt (
-                        [--config $env.QUALITY_GATE_OXFMT_CONFIG --write] ++ $files
-                    )
+                typescript => {
+                    let files = quality-gate-files [ts tsx mts cts vue] --language typescript
+                    if ($files | is-empty) {
+                        log warning 'No TypeScript source files remain after .quality-gate/exclude; skipping fixes.'
+                    } else {
+                        run-fix-check 'oxfmt' oxfmt (
+                            [--config $env.QUALITY_GATE_OXFMT_CONFIG --write] ++ $files
+                        )
+                    }
                 }
             }
         }
@@ -1348,27 +1467,26 @@ def run-language-category [category: string, language: string] {
     report-language-checks ($'($normalized) ($category)') $normalized (checks-for-category $category $normalized)
 }
 
-def check-fix [verb: string, language: string, check: string]: nothing -> string {
+def check-fix [directory: path, verb: string, language: string, check: string]: nothing -> string {
     match [$verb $language $check] {
-        [format python ruff] => 'ruff format --config $QUALITY_GATE_RUFF_CONFIG .'
-        [lint python ruff] => 'ruff check --config $QUALITY_GATE_RUFF_CONFIG --fix .'
-        [lint python complexipy] => 'complexipy .'
-        [lint python basedpyright] => 'basedpyright --project $QUALITY_GATE_PYRIGHT_CONFIG .'
-        [lint python strlint] => 'ast-grep scan'
-        [format go gofumpt] => 'gofumpt -w .'
-        [format go goimports] => 'goimports -w .'
-        [lint go golangci] => 'golangci-lint run --config $QUALITY_GATE_GO_CONFIG'
-        [lint go strlint] => 'ast-grep scan'
+        [format python ruff] => 'qg fix python'
+        [lint python ruff] => 'qg fix python  # applies the safe fixes; fix the remaining findings by hand'
+        [lint python complexipy] => 'Reduce the cognitive complexity of the reported functions (limit 15), then run `qg lint python`'
+        [typecheck python basedpyright] => 'Fix the reported type errors, then run `qg typecheck python`'
+        [lint python strlint] => 'Fix the reported structural findings, then run `qg strlint python`'
+        [format go gofumpt] => 'qg fix go'
+        [format go goimports] => 'qg fix go'
+        [lint go golangci] => 'Fix the reported findings, then run `qg lint go`'
+        [lint go strlint] => 'Fix the reported structural findings, then run `qg strlint go`'
         [lint go vet] => 'go vet ./...'
-        [lint go build] => 'go build ./...'
         [typecheck go build] => 'go build ./...'
-        [format typescript oxfmt] => 'oxfmt --config $QUALITY_GATE_OXFMT_CONFIG --write .'
-        [lint typescript oxlint] => 'oxlint --config $QUALITY_GATE_OXLINT_CONFIG .'
-        [lint typescript strlint] => 'ast-grep scan'
-        [lint typescript typecheck] => 'qg typecheck ts'
+        [format typescript oxfmt] => 'qg fix typescript'
+        [lint typescript oxlint] => 'Fix the reported findings, then run `qg lint typescript`'
+        [lint typescript strlint] => 'Fix the reported structural findings, then run `qg strlint typescript`'
+        [typecheck typescript tsc] => 'Fix the reported type errors, then run `qg typecheck typescript`'
         [test python pytest] => 'uv run pytest'
         [test go test] => 'go test ./...'
-        [test typescript test] => (if ('pnpm-lock.yaml' | path exists) { 'pnpm test' } else { 'npm test' })
+        [test typescript test] => (if ((node-lockfile $directory | default '' | path basename) == 'pnpm-lock.yaml') { 'pnpm test' } else { 'npm test' })
         _ => 'See the quality-gate task output above.'
     }
 }
@@ -1418,7 +1536,7 @@ Diagnostics:
         status: $result.status
         category: $result.category
         error: $error
-        fix: (check-fix $verb $language $check)
+        fix: (check-fix $directory $verb $language $check)
     }
 }
 
@@ -1644,7 +1762,7 @@ def detect [] {
             $'QUALITY_GATE_HAS_TYPESCRIPT=(if typescript in $languages { "true" } else { "false" })'
             ''
         ] | str join (char nl)
-        $content | save --force $detection_file
+        $content | save --append $detection_file
     }
 }
 
@@ -1660,10 +1778,7 @@ def test [] {
     if not ($failures | is-empty) {
         let failure_count = ($failures | length)
         let result_count = ($run.results | length)
-        if not (report-only) {
-            error make {msg: $"Tests failed: ($failure_count) of ($result_count) test runners failed."}
-        }
-        log warning $'REPORT-ONLY: tests found ($failure_count) failed test runners.'
+        error make {msg: $"Tests failed: ($failure_count) of ($result_count) test runners failed. Report-only mode applies to the static checks, never to the project's own tests."}
     }
 }
 
@@ -1699,20 +1814,18 @@ def run-command [verb: string, language: string, check: string] {
         [format python ruff] => (format-python)
         [lint python ruff] => (lint-python)
         [lint python complexipy] => (lint-python-complexipy)
-        [lint python basedpyright] => (lint-python-basedpyright)
+        [typecheck python basedpyright] => (typecheck-python-basedpyright)
         [lint python strlint] => (lint-strlint python $env.QUALITY_GATE_PYTHON_RULES)
         [format go gofumpt] => (format-go-gofumpt)
         [format go goimports] => (format-go-goimports)
         [lint go golangci] => (lint-go-golangci)
         [lint go strlint] => (lint-strlint go $env.QUALITY_GATE_GO_RULES)
         [lint go vet] => (lint-go-vet)
-        [lint go build] => (typecheck-go)
         [typecheck go build] => (typecheck-go)
         [format typescript oxfmt] => (format-typescript)
         [lint typescript oxlint] => (lint-typescript-oxlint)
         [lint typescript strlint] => (lint-strlint typescript $env.QUALITY_GATE_TYPESCRIPT_RULES)
-        [lint typescript typecheck] => (lint-typescript-typecheck)
-        [typecheck typescript] => (lint-typescript-typecheck)
+        [typecheck typescript tsc] => (typecheck-typescript)
         [test python pytest] => (test-python)
         [test go test] => (test-go)
         [test typescript test] => (test-typescript)

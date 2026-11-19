@@ -1,18 +1,13 @@
 export const FLAKE = path self | path dirname | path join .. ..
 
-# A runner has no global Git configuration; tests must not lean on the identity
-# or settings of whoever runs them.
-export-env {
-    $env.GIT_CONFIG_GLOBAL = '/dev/null'
-    $env.GIT_CONFIG_NOSYSTEM = '1'
-}
+use isolation.nu
 
 export const PYTHON_CHECKS = [
     format:python:ruff
     lint:python:ruff
     lint:python:complexipy
     lint:python:strlint
-    lint:python:basedpyright
+    typecheck:python:basedpyright
 ]
 
 export const GO_CHECKS = [
@@ -28,7 +23,7 @@ export const TYPESCRIPT_CHECKS = [
     format:typescript:oxfmt
     lint:typescript:oxlint
     lint:typescript:strlint
-    lint:typescript:typecheck
+    typecheck:typescript:tsc
 ]
 
 export def fixture-repo [name: string]: nothing -> path {
@@ -93,9 +88,9 @@ export def junit-checks [file: path]: nothing -> table {
         let message = if ($failures | is-empty) { '' } else { $failures | first | get attributes.message? | default '' }
         let category = if ($failures | is-empty) {
             'none'
-        } else if ($message | str contains 'Category: finding') {
+        } else if ($message | str starts-with 'Category: finding') {
             'finding'
-        } else if ($message | str contains 'Category: engine') {
+        } else if ($message | str starts-with 'Category: engine') {
             'engine'
         } else {
             'unknown'
@@ -123,6 +118,7 @@ export def run-app [root: path, app: string, ...arguments: string]: nothing -> r
         QUALITY_GATE_MODE: ''
         QUALITY_GATE_REPORT_UNTIL: ''
         GOLANGCI_LINT_CACHE: $'($root)-cache/golangci'
+        XDG_CACHE_HOME: $'($root)-cache/xdg'
     } {
         cd $FLAKE
         ^nix --extra-experimental-features 'nix-command flakes' run $'($FLAKE)#($app)' -- ...$arguments | complete
@@ -142,6 +138,7 @@ export def assert-corpus-case [
     expected_checks: list<string>
     expected_failures: list<string>
     --before-typecheck: closure
+    --messages: record = {}
 ] {
     mut checks = []
     for category in [format lint strlint typecheck] {
@@ -151,6 +148,15 @@ export def assert-corpus-case [
         let result = run-app $root $app category $category
         if ($result.checks | is-empty) {
             error make {msg: $'category ($category) produced no JUnit checks:\n($result.stdout)\n($result.stderr)'}
+        }
+        # The exit code is the contract CI relies on: a category that reports a
+        # failed check must fail, and one that reports none must not.
+        let reported_failure = $result.checks | where failed | is-not-empty
+        if $reported_failure and $result.exit_code != 1 {
+            error make {msg: $'category ($category) reports failed checks but exited with ($result.exit_code), expected 1'}
+        }
+        if (not $reported_failure) and $result.exit_code != 0 {
+            error make {msg: $'category ($category) reports no failed check but exited with ($result.exit_code):\n($result.stdout)\n($result.stderr)'}
         }
         $checks = ($checks | append $result.checks)
     }
@@ -162,6 +168,16 @@ export def assert-corpus-case [
     if $failed != ($expected_failures | sort) {
         let details = $checks | where failed | select check category message | to nuon
         error make {msg: $'failing checks: ($failed | to nuon), expected ($expected_failures | sort | to nuon). Details: ($details)'}
+    }
+    let reported = $checks
+    let wrong_rule = $messages | items {|check, expected|
+        let found = $reported | where check == $check | where failed
+        if ($found | is-empty) or not (($found | first | get message) | str contains $expected) {
+            $'($check) must fail with ($expected), got: (($found | get --optional 0.message | default "no failure" | str substring 0..300))'
+        }
+    } | compact
+    if ($wrong_rule | is-not-empty) {
+        error make {msg: ($wrong_rule | str join "\n")}
     }
     let not_findings = $checks | where failed | where category != finding
     if ($not_findings | is-not-empty) {
@@ -220,6 +236,7 @@ export def run-script [root: path, extra: record, ...arguments: string]: nothing
         QUALITY_GATE_CI: ''
         QUALITY_GATE_MODE: ''
         GOLANGCI_LINT_CACHE: $'($root)-cache/golangci'
+        XDG_CACHE_HOME: $'($root)-cache/xdg'
     } | merge $extra
     mkdir $'($root)-reports'
     let result = with-env $environment {
@@ -228,11 +245,26 @@ export def run-script [root: path, extra: record, ...arguments: string]: nothing
     $result | insert checks (junit-checks ($environment.QUALITY_GATE_JUNIT_FILE)) | insert junit $environment.QUALITY_GATE_JUNIT_FILE
 }
 
-# A stand-in for `tsc --showConfig`. The JSON lives in a file and the script only
-# cats it, so the result does not depend on how the shell treats escapes.
-export def write-show-config-tool [bin: path, files: list<string> = ['./src/app.ts']] {
-    let document = $bin | path join tsc-config.json
+# A stand-in for the compiler the project is checked with
+# (`node_modules/.bin/<name>`). `--showConfig` prints the JSON of a config, which
+# lives in a file the script only cats, so the result does not depend on how the
+# shell treats escapes. Any other call runs `on_check`.
+export def write-project-compiler [
+    project: path
+    name: string
+    on_check: string = ''
+    --files: list<string> = ['./src/app.ts']
+    --show-config: record = {}
+] {
+    let bin = $project | path join node_modules .bin
+    let document = $bin | path join $'($name)-config.json'
     mkdir $bin
-    {compilerOptions: {}, files: $files} | to json --raw | save --force $document
-    write-executable ($bin | path join tsc) $"#!/bin/sh\ncat '($document)'\n"
+    {compilerOptions: {}, files: $files} | merge $show_config | to json --raw | save --force $document
+    write-executable ($bin | path join $name) $"#!/bin/sh\nif [ \"$1\" = \"--showConfig\" ]; then cat '($document)'; exit 0; fi\n($on_check)\n"
+}
+
+# The Python environment the Quality Gate keeps for a project lives in the run's
+# own cache, not in the repository.
+export def quality-gate-venvs [root: path]: nothing -> list<path> {
+    glob $'($root)-cache/xdg/quality-gate/venvs/*'
 }

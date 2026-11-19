@@ -134,7 +134,7 @@ def test-stale-lockfile-is-an-engine-failure-and-is-never-rewritten [] {
         let result = run-app $root quality-gate-python category typecheck
         assert ($result.exit_code != 0)
         let failures = failed-checks $result
-        assert equal ($failures | get check) [lint:python:basedpyright]
+        assert equal ($failures | get check) [typecheck:python:basedpyright]
         assert equal ($failures | first | get category) engine
         assert equal (tree-status $root) '' 'uv.lock must not be rewritten'
         null
@@ -156,7 +156,10 @@ def test-python-interpreter-follows-the-project-declaration [] {
         let outcome = try {
             let result = run-app $root quality-gate-python category typecheck
             assert equal $result.exit_code 0 $result.stdout
-            let configuration = open --raw ($root | path join .venv pyvenv.cfg)
+            let venvs = quality-gate-venvs $root
+            assert equal ($venvs | length) 1 $'expected one Quality Gate environment, got ($venvs)'
+            assert (not (($root | path join .venv) | path exists)) 'the project .venv must not be created or touched'
+            let configuration = open --raw ($venvs | first | path join pyvenv.cfg)
             assert ($configuration | str contains $'version_info = ($case.expected).') $'($case.fixture) expected Python ($case.expected):\n($configuration)'
             null
         } catch {|error|
@@ -210,10 +213,9 @@ def test-node-runtime-is-selected-for-each-project [] {
             write-node-runtime ($root | path join $'node($major)') $major
         }
         write-exit-tool $bin npm 0
-        write-show-config-tool $bin
         for name in [a b] {
             let project = $root | path join apps $name
-            write-executable ($project | path join node_modules .bin tsc) $"#!/bin/sh\necho \"($name):$\(node --version\)\" >> '($log)'\n"
+            write-project-compiler $project tsc $"echo \"($name):$\(node --version\)\" >> '($log)'"
         }
         let result = run-script $root {
             PATH: ($env.PATH | prepend $bin)
@@ -236,8 +238,7 @@ def test-node-version-mismatch-is-rejected [] {
         let bin = $root | path join fakebin
         write-node-runtime $bin 22
         write-exit-tool $bin npm 0
-        write-show-config-tool $bin
-        write-executable ($root | path join node_modules .bin tsc) "#!/bin/sh\nexit 0\n"
+        write-project-compiler $root tsc 'exit 0'
         let result = run-script $root {PATH: ($env.PATH | prepend $bin)} category typecheck
         assert ($result.exit_code != 0)
         let failure = failed-checks $result | first
@@ -258,11 +259,10 @@ def test-typecheck-requires-the-project-compiler [] {
         write-node-runtime $bin 24
         write-exit-tool $bin npm 0
         write-exit-tool $bin npx 0
-        write-show-config-tool $bin
         let result = run-script $root {PATH: ($env.PATH | prepend $bin)} category typecheck
         assert ($result.exit_code != 0)
         let failure = failed-checks $result | first
-        assert equal $failure.category engine
+        assert equal $failure.category finding
         assert ($failure.message | str contains 'is not installed in the project') $failure.message
         null
     } catch {|error|
@@ -288,9 +288,8 @@ def test-vue-projects-are-checked-with-vue-tsc-and-others-with-tsc [] {
             let log = $root | path join compilers.log
             write-node-runtime $bin 24
             write-exit-tool $bin npm 0
-            write-show-config-tool $bin
             for name in [tsc vue-tsc] {
-                write-executable ($root | path join node_modules .bin $name) $"#!/bin/sh\necho '($name)' >> '($log)'\n"
+                write-project-compiler $root $name $"echo '($name)' >> '($log)'"
             }
             let result = run-script $root {PATH: ($env.PATH | prepend $bin)} category typecheck
             assert equal $result.exit_code 0 $'($result.stdout)\n($result.stderr)'
@@ -386,12 +385,11 @@ def test-go-tool-exit-codes-are-classified-by-tool [] {
 def test-typescript-tool-exit-codes-are-classified-by-tool [] {
     let prepare = {|root bin|
         write-node-runtime $bin 24
-        write-show-config-tool $bin
     }
     let with_compiler = {|code|
         {|root bin|
             do $prepare $root $bin
-            write-exit-tool ($root | path join node_modules .bin) tsc $code
+            write-project-compiler $root tsc $'exit ($code)'
         }
     }
     let cases = [
@@ -400,11 +398,11 @@ def test-typescript-tool-exit-codes-are-classified-by-tool [] {
         {category: lint, tools: [{name: oxlint, code: 0}], prepare: $prepare, check: 'lint:typescript:oxlint', expected: pass}
         {category: format, tools: [{name: oxfmt, code: 1, output: 'src/app.ts'}], prepare: $prepare, check: 'format:typescript:oxfmt', expected: finding}
         {category: format, tools: [{name: oxfmt, code: 2}], prepare: $prepare, check: 'format:typescript:oxfmt', expected: engine}
-        {category: typecheck, tools: [{name: npm, code: 0}], prepare: (do $with_compiler 1), check: 'lint:typescript:typecheck', expected: finding}
-        {category: typecheck, tools: [{name: npm, code: 0}], prepare: (do $with_compiler 2), check: 'lint:typescript:typecheck', expected: finding}
-        {category: typecheck, tools: [{name: npm, code: 0}], prepare: (do $with_compiler 3), check: 'lint:typescript:typecheck', expected: engine}
-        {category: typecheck, tools: [{name: npm, code: 0}], prepare: (do $with_compiler 0), check: 'lint:typescript:typecheck', expected: pass}
-        {category: typecheck, tools: [{name: npm, code: 1}], prepare: (do $with_compiler 0), check: 'lint:typescript:typecheck', expected: engine}
+        {category: typecheck, tools: [{name: npm, code: 0}], prepare: (do $with_compiler 1), check: 'typecheck:typescript:tsc', expected: finding}
+        {category: typecheck, tools: [{name: npm, code: 0}], prepare: (do $with_compiler 2), check: 'typecheck:typescript:tsc', expected: finding}
+        {category: typecheck, tools: [{name: npm, code: 0}], prepare: (do $with_compiler 3), check: 'typecheck:typescript:tsc', expected: engine}
+        {category: typecheck, tools: [{name: npm, code: 0}], prepare: (do $with_compiler 0), check: 'typecheck:typescript:tsc', expected: pass}
+        {category: typecheck, tools: [{name: npm, code: 1}], prepare: (do $with_compiler 0), check: 'typecheck:typescript:tsc', expected: engine}
     ]
     let failures = $cases | each {|case|
         let table = classify ts-clean $case.category $case.tools $case.prepare
@@ -461,4 +459,100 @@ def test-terminal-escape-sequences-never-reach-the-reports [] {
         $error.msg
     }
     finish $root $outcome
+}
+
+# ---------------------------------------------------------------------------
+# Nested projects and workspaces
+# ---------------------------------------------------------------------------
+
+@test
+def test-files-of-a-nested-project-are-checked-once-by-that-project [] {
+    let root = fixture-repo python-nested
+    let outcome = try {
+        let result = run-app $root quality-gate-python category lint
+        let projects = $result.checks | get project | uniq | sort
+        assert equal $projects ['.' 'services/api'] 'both projects must be discovered'
+        let failing = failed-checks $result | where check == 'lint:python:ruff' | get project
+        assert equal $failing ['services/api'] $'the violation belongs to the nested project only, not also to the project around it:\n($result.stdout)'
+        null
+    } catch {|error|
+        $error.msg
+    }
+    finish $root $outcome
+}
+
+@test
+def test-a-uv-workspace-member-uses-the-lockfile-of-the-workspace-root [] {
+    let root = fixture-repo python-workspace
+    let outcome = try {
+        let result = run-app $root quality-gate-python category typecheck
+        assert equal $result.exit_code 0 $'($result.stdout)\n($result.stderr)'
+        assert equal ($result.checks | get project | uniq | sort) ['.' 'packages/lib']
+        assert equal (failed-checks $result | length) 0
+        assert (not (($root | path join packages lib .venv) | path exists)) 'the member must not get an environment inside the repository'
+        null
+    } catch {|error|
+        $error.msg
+    }
+    finish $root $outcome
+}
+
+@test
+def test-an-npm-workspace-member-uses-the-lockfile-and-node-version-of-the-workspace-root [] {
+    let root = fixture-repo ts-workspace
+    let outcome = try {
+        seed-node-modules $root
+        let result = run-app $root quality-gate-typescript category typecheck
+        assert equal $result.exit_code 0 $'($result.stdout)\n($result.stderr)'
+        assert equal ($result.checks | get project | uniq) ['packages/lib']
+        assert equal (failed-checks $result | length) 0
+        null
+    } catch {|error|
+        $error.msg
+    }
+    finish $root $outcome
+}
+
+@test
+def test-the-hook-selects-only-the-project-that-owns-a-changed-file [] {
+    let root = fixture-repo python-nested
+    let outcome = try {
+        let result = with-env {QUALITY_GATE_CHANGED_FILES: 'services/api/api.py'} {
+            run-app $root quality-gate-python category lint
+        }
+        assert equal ($result.checks | get project | uniq) ['services/api'] 'a change inside a nested project must not select the project around it'
+        null
+    } catch {|error|
+        $error.msg
+    }
+    finish $root $outcome
+}
+
+@test
+def test-the-exclusion-cap-is-exactly-thirty-percent [] {
+    let cases = [
+        {excluded: 3, accepted: true}
+        {excluded: 4, accepted: false}
+    ]
+    for case in $cases {
+        let root = fixture-repo python-clean
+        let outcome = try {
+            # Ten code files in total, `excluded` of them under gen/.
+            for index in 1..$case.excluded { write-file $root $'gen/g($index).py' "value = 1\n" }
+            for index in 1..(9 - $case.excluded) { write-file $root $'kept($index).py' "value = 1\n" }
+            write-file $root .quality-gate/exclude "gen/\n"
+            commit-all $root
+            let result = run-app $root quality-gate-detect detect
+            if $case.accepted {
+                assert equal $result.exit_code 0 $'($case.excluded) of 10 files is 30% and must be accepted:\n($result.stderr)'
+            } else {
+                assert ($result.exit_code != 0) $'($case.excluded) of 10 files must be refused'
+                assert (($result.stdout + $result.stderr) | str contains 'maximum is 30%') $result.stderr
+            }
+            null
+        } catch {|error|
+            $error.msg
+        }
+        finish $root $outcome
+    }
 }
