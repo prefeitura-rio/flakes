@@ -24,7 +24,7 @@ jobs:
       changed: ${{ steps.compare.outputs.changed }}
     steps:
       - name: Checkout target commit
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
@@ -32,7 +32,7 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
       - name: Use devenv binary cache
-        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        uses: cachix/cachix-action@0203c83b2290520cb3784590a1283885371d5907 # v17
         with:
           name: devenv
       - name: Compare Quality Gate derivations
