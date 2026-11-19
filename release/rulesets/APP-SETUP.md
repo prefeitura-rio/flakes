@@ -37,12 +37,19 @@ from an unreviewed branch would then have the same authority. The App must
 also be the identity used by the reusable release workflow and by emergency
 promotion. PRs created by the App trigger normal validation workflows.
 
+## Backup of the private key
+
+The manual path of the runbook, used when GitHub Actions is down, needs the App
+private key. It is kept in the company's password vault, readable by at least two
+administrators, and rotated after every use. Vault and owners: _to be recorded
+here by the owners of the Quality Gate_.
+
 ## Applying the governance
 
 `apply.sh` configures everything this flow depends on: the three Environments
 (only `master` may deploy, admins cannot bypass, the emergency one requires the
 two reviewers and forbids self-review), read-only default workflow permissions
-and both rulesets, with the App as the only bypass actor of the tags ruleset.
+and the three rulesets, with the App as the only bypass actor of the tags ruleset and no bypass actor at all on the version tags.
 It compares each resource with GitHub first, so running it again changes nothing.
 
 ```bash

@@ -31,7 +31,9 @@ def classify-testcase [job: record, testcase: record]: nothing -> record {
         { name: $name, qualified: $raw_name, job: $job.name, status: 'success', category: 'none', reason: '' }
     } else {
         let message = $failures | first | get attributes.message? | default ''
-        let category = if ($message | str contains 'Category: finding') {
+        # The engine writes the category as the first line of the message. Tool
+        # output further down can say anything, so it is never searched.
+        let category = if ($message | str starts-with 'Category: finding') {
             'finding'
         } else {
             'engine'

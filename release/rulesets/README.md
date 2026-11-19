@@ -1,8 +1,14 @@
 # Quality Gate rulesets
 
-These JSON files are the desired repository policy for `master` and all
-`quality-gate-*` tags. They are kept as code so the policy can be reviewed
-alongside the release workflow.
+These JSON files are the desired repository policy for `master`, for the
+`quality-gate-*` tags and for the immutable `quality-gate-v*` version tags. They
+are kept as code so the policy can be reviewed alongside the release workflow.
+
+| File | Ruleset | Rules | Bypass |
+| --- | --- | --- | --- |
+| `master.json` | `protect-master` | pull request with code-owner review, approval of the last push, linear history, required checks | none |
+| `quality-gate-tags.json` | `protect-quality-gate-tags` | creation, update and deletion of `quality-gate-*` | the release App only |
+| `quality-gate-version-tags.json` | `protect-quality-gate-version-tags` | update and deletion of `quality-gate-v*` | **none** |
 
 The tag ruleset allows only the dedicated release GitHub App (App ID `5818520`,
 see [APP-SETUP.md](APP-SETUP.md)) to create, update or delete `quality-gate-*`
@@ -12,8 +18,20 @@ generic GitHub Actions integration, is blocked. Version tags stay immutable in
 the release script; the bypass exists only because GitHub cannot tell the mutable
 tags from the version-tag pattern.
 
+The second tag ruleset is what makes a version immutable. The first one must let
+the App move the mutable `quality-gate-next` and `quality-gate-latest`, and
+GitHub cannot tell them apart from a version tag by the name pattern alone, so
+the App could also move or delete `quality-gate-v1.2.0`. Rulesets add up and the
+strictest wins, so a second one over `quality-gate-v*` without any bypass actor
+forbids that, for the App too. Creating a version tag is still left to the App
+by the first ruleset.
+
 The `master` ruleset requires pull-request delivery, code-owner review, linear
 history, and the Quality Gate self-test and Darwin build. It has no bypass actor.
+The two checks are accepted only when GitHub Actions reports them: a commit
+status of the same name, which anyone with write access can post, does not satisfy
+them. A code owner who pushes to a pull request cannot approve it either, because
+the approval of the last push must come from someone else.
 
 ## Apply and verify
 

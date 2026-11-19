@@ -1,5 +1,6 @@
 use std/assert
 use std/testing *
+use support/isolation.nu
 
 # release/rulesets/apply.sh against a stateful fake of the GitHub API that starts
 # from a snapshot of the real repository (tests/fixtures/github-api/before.json).
@@ -121,10 +122,14 @@ def test_apply_configures_everything_and_verify_then_passes [] {
         assert equal (do $reviewers quality-gate-release) []
         assert equal (do $reviewers cachix-publish) []
         assert equal $state.workflow {default_workflow_permissions: read, can_approve_pull_request_reviews: false}
-        assert equal ($state.rulesets | length) 2
+        assert equal ($state.rulesets | length) 3
         let tags = $state.rulesets | where name == protect-quality-gate-tags | first
         assert equal $tags.bypass_actors [{actor_id: 5818520, actor_type: Integration, bypass_mode: always}]
         assert equal ($state.rulesets | where name == protect-master | first | get bypass_actors) []
+        let version_tags = $state.rulesets | where name == protect-quality-gate-version-tags | first
+        assert equal $version_tags.bypass_actors [] 'nobody, not even the release App, may move or delete a version tag'
+        assert equal ($version_tags.rules | get type | sort) [deletion update]
+        assert equal $version_tags.conditions.ref_name.include ['refs/tags/quality-gate-v*']
 
         let verified = apply-script $world --verify
         assert equal $verified.exit_code 0 $'($verified.stdout)\n($verified.stderr)'
@@ -148,7 +153,7 @@ def test_applying_twice_changes_nothing_the_second_time [] {
         let second = apply-script $world --apply
         assert equal $second.exit_code 0 $'($second.stdout)\n($second.stderr)'
         assert equal (writes $world) [] 'a second run must not send any write'
-        assert equal ((open $world.state).rulesets | length) 2 'rulesets must not be duplicated'
+        assert equal ((open $world.state).rulesets | length) 3 'rulesets must not be duplicated'
         null
     } catch {|error|
         $error.msg
@@ -183,6 +188,7 @@ def test_drift_is_detected_and_repaired_without_creating_duplicates [] {
         for expected in [
             'ruleset protect-master differs'
             'ruleset protect-quality-gate-tags differs'
+            'ruleset protect-quality-gate-version-tags differs'
             'environment quality-gate-promotion: administrators can bypass it'
             'workflow permissions'
         ] {
@@ -194,7 +200,7 @@ def test_drift_is_detected_and_repaired_without_creating_duplicates [] {
         assert equal $repaired.exit_code 0 $'($repaired.stdout)\n($repaired.stderr)'
         let sent = writes $world
         assert ($sent | all {|write| $write | str starts-with 'PUT' }) $'repairs must update in place, sent: ($sent | to nuon)'
-        assert equal ((open $world.state).rulesets | length) 2
+        assert equal ((open $world.state).rulesets | length) 3
         assert equal (apply-script $world --verify | get exit_code) 0
         null
     } catch {|error|
@@ -232,7 +238,7 @@ def test_a_skipped_ruleset_is_neither_created_nor_verified [] {
         assert equal $applied.exit_code 0 $'($applied.stdout)\n($applied.stderr)'
         assert ($applied.stdout | str contains 'SKIPPED  ruleset protect-master')
         let rulesets = (open $world.state).rulesets
-        assert equal ($rulesets | get name) [protect-quality-gate-tags]
+        assert equal ($rulesets | get name | sort) [protect-quality-gate-tags protect-quality-gate-version-tags]
 
         let verified = apply-script $world --verify --skip-ruleset protect-master
         assert equal $verified.exit_code 0 $'($verified.stdout)\n($verified.stderr)'
@@ -243,7 +249,7 @@ def test_a_skipped_ruleset_is_neither_created_nor_verified [] {
         # Once the checks exist on master the skip is dropped and the ruleset is created.
         let complete = apply-script $world --apply
         assert equal $complete.exit_code 0 $'($complete.stdout)\n($complete.stderr)'
-        assert equal ((open $world.state).rulesets | length) 2
+        assert equal ((open $world.state).rulesets | length) 3
         assert equal (apply-script $world --verify | get exit_code) 0
         null
     } catch {|error|
@@ -306,7 +312,11 @@ def test_the_docs_name_the_app_that_the_tag_ruleset_trusts [] {
     for document in [README.md APP-SETUP.md] {
         let text = open --raw ($RELEASE | path join rulesets $document)
         assert ($text | str contains $app) $'($document) must name the App ID ($app)'
-        assert not ($text | str contains '15368') $'($document) still trusts the generic GitHub Actions integration'
+    }
+    for file in [quality-gate-tags.json quality-gate-version-tags.json master.json] {
+        let ruleset = open ($RELEASE | path join rulesets $file)
+        let generic = $ruleset.bypass_actors | where actor_id == 15368
+        assert ($generic | is-empty) $'($file) lets the generic GitHub Actions integration bypass the ruleset'
     }
     let script = open --raw ($RELEASE | path join rulesets apply.sh)
     assert (not ($script | str contains '5818520')) 'the App ID is a parameter of apply.sh, never hard-coded'
@@ -332,4 +342,72 @@ def test_every_environment_the_workflows_use_is_configured_by_apply_sh [] {
     assert ($used | is-not-empty) 'the workflows are expected to use environments'
     let unknown = $used | where {|name| $name not-in $configured }
     assert ($unknown | is-empty) $'environments used by workflows but not configured by apply.sh: ($unknown | to nuon)'
+}
+
+@test
+def test_master_trusts_check_results_only_from_github_actions_and_needs_a_second_pair_of_eyes [] {
+    let master = open ($RELEASE | path join rulesets master.json)
+    let checks = $master.rules | where type == required_status_checks | first | get parameters.required_status_checks
+    assert ($checks | is-not-empty)
+    let spoofable = $checks | where {|check| ($check.integration_id? | default null) != 15368 } | get context
+    assert ($spoofable | is-empty) $'any commit status could satisfy: ($spoofable | to nuon)'
+    let review = $master.rules | where type == pull_request | first | get parameters
+    assert equal $review.require_last_push_approval true 'a code owner must not approve a pull request they pushed to'
+    assert equal $review.require_code_owner_review true
+}
+
+@test
+def test_a_status_check_that_any_source_can_satisfy_is_reported_as_drift [] {
+    let world = new-world
+    let outcome = try {
+        secrets-in-environments $world
+        let applied = apply-script $world --apply
+        assert equal $applied.exit_code 0 $'($applied.stdout)\n($applied.stderr)'
+        edit-state $world {|state|
+            let rulesets = $state.rulesets | each {|ruleset|
+                if $ruleset.name == protect-master {
+                    let rules = $ruleset.rules | each {|rule|
+                        if $rule.type == required_status_checks {
+                            $rule | update parameters.required_status_checks ($rule.parameters.required_status_checks | each {|check| $check | reject integration_id })
+                        } else { $rule }
+                    }
+                    $ruleset | update rules $rules
+                } else { $ruleset }
+            }
+            $state | update rulesets $rulesets
+        }
+        let verified = apply-script $world --verify
+        assert equal $verified.exit_code 1
+        assert ($verified.stdout | str contains 'ruleset protect-master differs') $verified.stdout
+        null
+    } catch {|error|
+        $error.msg
+    }
+    finish $world $outcome
+}
+
+@test
+def test_verify_does_not_pass_when_the_secret_listings_cannot_be_read [] {
+    let cases = [
+        {failing: 'GET actions/secrets', expected: 'cannot read the repository secrets'}
+        {failing: 'GET environments/cachix-publish/secrets', expected: 'cannot read the secrets of environment cachix-publish'}
+    ]
+    for case in $cases {
+        let world = new-world
+        let outcome = try {
+            secrets-in-environments $world
+            let applied = apply-script $world --apply
+            assert equal $applied.exit_code 0 $'($applied.stdout)\n($applied.stderr)'
+            # A secret still stored at repository level, with a token that cannot list them.
+            edit-state $world {|state| $state | update repository_secrets [CACHIX_AUTH_TOKEN] }
+            let verified = with-env {FAKE_GH_FAIL: $case.failing} { apply-script $world --verify }
+            assert equal $verified.exit_code 1 $'($case.failing): an unreadable listing must not be reported as compliant\n($verified.stdout)'
+            assert ($verified.stdout | str contains $case.expected) $verified.stdout
+            assert not ($verified.stdout | str contains 'matches the Quality Gate governance')
+            null
+        } catch {|error|
+            $error.msg
+        }
+        finish $world $outcome
+    }
 }

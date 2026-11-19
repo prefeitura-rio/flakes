@@ -1,5 +1,6 @@
 use std/assert
 use std/testing *
+use support/isolation.nu
 
 # release/scripts/open-promotion-pr.sh against a real Git repository with a bare
 # remote. The fake `gh` answers `pr list` from a file and records `pr create`.

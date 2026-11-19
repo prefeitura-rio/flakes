@@ -76,6 +76,26 @@ fetch() {
   gh api "/repos/$repository/$1" 2>/dev/null
 }
 
+# Like `fetch`, but a 404 answers with an empty listing: the resource does not
+# exist yet, which is a fact other checks report. Any other failure, a 403 above
+# all, leaves the status non-zero: it means "cannot know", not "empty".
+fetch_listing() {
+  local output errors
+  errors="$(mktemp)"
+  if output="$(gh api "/repos/$repository/$1" 2>"$errors")"; then
+    rm -f "$errors"
+    printf '%s' "$output"
+    return 0
+  fi
+  if grep -q 'HTTP 404' "$errors"; then
+    rm -f "$errors"
+    echo '{}'
+    return 0
+  fi
+  rm -f "$errors"
+  return 1
+}
+
 # Writes the request, or only prints it unless --apply was given.
 send() {
   local method="$1" path="$2" body="${3:-}"
@@ -180,9 +200,9 @@ ruleset_facets='{
   bypass: ([.bypass_actors[]? | {actor_id, actor_type, bypass_mode}] | sort_by(.actor_id)),
   rules: ([.rules[] | {type} + (
       if .type == "pull_request" then
-        {parameters: (.parameters | {dismiss_stale_reviews_on_push, require_code_owner_review, required_approving_review_count, required_review_thread_resolution})}
+        {parameters: (.parameters | {dismiss_stale_reviews_on_push, require_code_owner_review, require_last_push_approval, required_approving_review_count, required_review_thread_resolution})}
       elif .type == "required_status_checks" then
-        {parameters: {strict: .parameters.strict_required_status_checks_policy, contexts: ([.parameters.required_status_checks[].context] | sort)}}
+        {parameters: {strict: .parameters.strict_required_status_checks_policy, checks: ([.parameters.required_status_checks[] | {context, integration_id}] | sort_by(.context))}}
       else {} end)] | sort_by(.type))
 }'
 
@@ -218,8 +238,15 @@ ruleset() {
 # --- secrets (read only: values are never touched) --------------------------
 
 secrets() {
-  local repository_secrets
-  repository_secrets="$(fetch actions/secrets | jq -r '.secrets[]?.name' || true)"
+  # A listing that cannot be read is not an empty one: without it nobody knows
+  # whether a protected secret is still stored where any branch can read it.
+  local listing repository_secrets=""
+  if listing="$(fetch_listing actions/secrets)"; then
+    repository_secrets="$(jq -r '.secrets[]?.name' <<<"$listing")"
+  else
+    problem "cannot read the repository secrets (administrator access is needed); protected secrets at repository level were not checked"
+    echo "UNKNOWN  repository secrets could not be read"
+  fi
   for secret in $protected_secrets; do
     if grep -qx "$secret" <<<"$repository_secrets"; then
       problem "secret $secret is stored at repository level; move it to its environment and delete this copy"
@@ -228,7 +255,12 @@ secrets() {
   done
   local name present
   for name in $environment_names; do
-    present="$(fetch "environments/$name/secrets" | jq -r '.secrets[]?.name' || true)"
+    if ! listing="$(fetch_listing "environments/$name/secrets")"; then
+      problem "cannot read the secrets of environment $name"
+      echo "UNKNOWN  secrets of environment $name could not be read"
+      continue
+    fi
+    present="$(jq -r '.secrets[]?.name' <<<"$listing")"
     for secret in $(secrets_of "$name"); do
       if ! grep -qx "$secret" <<<"$present"; then
         problem "secret $secret is missing from environment $name"
@@ -243,10 +275,13 @@ environment quality-gate-promotion "$(reviewers_json)"
 environment cachix-publish '[]'
 workflow_permissions
 
-# The tag ruleset is the only one that names the App.
+# Only the first tag ruleset names the App. Version tags also fall under it, so
+# the second one, without any bypass, is what keeps even the App from moving or
+# deleting a release: the strictest ruleset wins.
 ruleset "$(jq --argjson app "$app_id" \
   '.bypass_actors = [{actor_id: $app, actor_type: "Integration", bypass_mode: "always"}]' \
   "$rulesets_dir/quality-gate-tags.json")"
+ruleset "$(cat "$rulesets_dir/quality-gate-version-tags.json")"
 ruleset "$(cat "$rulesets_dir/master.json")"
 
 secrets

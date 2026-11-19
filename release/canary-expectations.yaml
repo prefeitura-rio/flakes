@@ -14,12 +14,12 @@ projects:
       - format:python:ruff
       - lint:python:ruff
       - lint:python:complexipy
-      - lint:python:basedpyright
+      - typecheck:python:basedpyright
     required_checks:
       - format:python:ruff
       - lint:python:ruff
       - lint:python:complexipy
-      - lint:python:basedpyright
+      - typecheck:python:basedpyright
       - lint:python:strlint
     expected_skipped:
       - quality-gate:tests
@@ -52,7 +52,7 @@ projects:
       - format:typescript:oxfmt
       - lint:typescript:oxlint
       - lint:typescript:strlint
-      - lint:typescript:typecheck
+      - typecheck:typescript:tsc
     expected_skipped:
       - quality-gate:tests
   - id: 51
@@ -66,7 +66,7 @@ projects:
       - format:typescript:oxfmt
       - lint:typescript:oxlint
       - lint:typescript:strlint
-      - lint:typescript:typecheck
+      - typecheck:typescript:tsc
     expected_skipped:
       - quality-gate:tests
   - id: 78
@@ -82,17 +82,17 @@ projects:
       - lint:go:golangci
       - lint:go:vet
       - lint:typescript:oxlint
-      - lint:python:basedpyright
+      - typecheck:python:basedpyright
       - lint:python:strlint
       - lint:go:strlint
       - lint:typescript:strlint
       - typecheck:go:build
-      - lint:typescript:typecheck
+      - typecheck:typescript:tsc
     required_checks:
       - format:python:ruff
       - lint:python:ruff
       - lint:python:complexipy
-      - lint:python:basedpyright
+      - typecheck:python:basedpyright
       - lint:python:strlint
       - format:go:gofumpt
       - format:go:goimports
@@ -103,6 +103,6 @@ projects:
       - format:typescript:oxfmt
       - lint:typescript:oxlint
       - lint:typescript:strlint
-      - lint:typescript:typecheck
+      - typecheck:typescript:tsc
     expected_skipped:
       - quality-gate:tests

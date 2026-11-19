@@ -66,6 +66,13 @@ def --wrapped main [...args: string] {
     let state_file = $env.FAKE_GH_STATE
     let state = open $state_file
 
+    # FAKE_GH_FAIL lists `METHOD path-prefix` entries, separated by `;`, that fail
+    # as they do for a token without the permission: HTTP 403, not a 404.
+    let failing = $env.FAKE_GH_FAIL? | default '' | split row ';' | where {|entry| $entry | is-not-empty }
+    if ($failing | any {|entry| $'($method) ($path)' | str starts-with $entry }) {
+        fail 1 'gh: Resource not accessible by integration (HTTP 403)'
+    }
+
     let segments = $path | split row '/'
     let result = match [$method $segments] {
         [GET [environments $name]] => {

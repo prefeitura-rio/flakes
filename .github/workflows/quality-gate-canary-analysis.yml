@@ -36,7 +36,6 @@ jobs:
     environment: quality-gate-release
     env:
       GITLAB_API: https://git.iplan.rio/api/v4
-      GITLAB_TOKEN: ${{ secrets.GITLAB_CANARY_TOKEN }}
       CANDIDATE_REF_INPUT: ${{ inputs.candidate_ref }}
       HAS_RELEASE_APP: ${{ secrets.QUALITY_GATE_RELEASE_APP_ID != '' && secrets.QUALITY_GATE_RELEASE_APP_PRIVATE_KEY != '' }}
       PROMOTION_EXPECTED: ${{ github.event_name != 'workflow_dispatch' || inputs.create_promotion_pr }}
@@ -71,9 +70,12 @@ jobs:
           private-key: ${{ secrets.QUALITY_GATE_RELEASE_APP_PRIVATE_KEY }}
           owner: prefeitura-rio
           repositories: flakes
+          permission-contents: write
+          permission-pull-requests: write
       - name: Trigger and analyze sandbox pipelines
         shell: bash
         env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_CANARY_TOKEN }}
           GITHUB_TOKEN: ${{ steps.release-token.outputs.token || github.token }}
           ACTIONS_READ_TOKEN: ${{ github.token }}
         run: |
@@ -101,19 +103,33 @@ jobs:
           trap 'rm -rf "$tmp"' EXIT
           artifact_name="quality-gate-canary-${candidate_sha}"
           echo "CANARY_ARTIFACT_NAME=$artifact_name" >> "$GITHUB_ENV"
+
+          # Sandboxes run code selected by this SHA, so it must be the target of a
+          # release tag of this repository and not just any 40-hex string.
+          git fetch --quiet --tags origin
+          version_tag="$(git tag --points-at "$candidate_sha" 'quality-gate-v*' | sort -V | tail -n 1)"
+          if [ -z "$version_tag" ]; then
+            echo "Candidate ${candidate_sha} is not the target of an immutable quality-gate-v* tag." >&2
+            exit 1
+          fi
+          test "$(git cat-file -t "refs/tags/$version_tag")" = tag
+          bake_days="$(awk -F': *' '$1 == "bake_days" { print $2 }' release/channels.yaml)"
+          test -n "$bake_days"
+          candidate_created="$(git for-each-ref --format='%(creatordate:iso-strict)' "refs/tags/$version_tag")"
+
+          # A healthy analysis may be reused while the candidate bakes, but once the
+          # bake time is over a new one is required: the sandboxes are checked again
+          # at the end, not only on the first day.
+          bake_end="$(date -u -d "$candidate_created + ${bake_days} days" +%Y-%m-%dT%H:%M:%SZ)"
+          not_before=""
+          if [[ "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$bake_end" ]]; then
+            not_before="$bake_end"
+          fi
           reuse_analysis=false
-          previous_artifact_id="$(GH_TOKEN="$ACTIONS_READ_TOKEN" gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=100" \
-            --jq '.artifacts[] | select(.expired == false) | .id' | head -n 1)"
-          if [ -n "$previous_artifact_id" ]; then
-            GH_TOKEN="$ACTIONS_READ_TOKEN" gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/artifacts/${previous_artifact_id}/zip" > "$tmp/previous.zip"
-            if unzip -p "$tmp/previous.zip" canary-analysis.json | jq -e '.healthy == true' >/dev/null; then
-              echo "Candidate ${candidate_sha} already has a healthy canary analysis; skipping the sandbox pipelines."
-              unzip -p "$tmp/previous.zip" canary-analysis.json > "$tmp/reused-analysis.json"
-              cp "$tmp/reused-analysis.json" canary-analysis.json
-              reuse_analysis=true
-            fi
+          if GH_TOKEN="$ACTIONS_READ_TOKEN" bash release/scripts/verify-canary-health.sh \
+            --sha "$candidate_sha" ${not_before:+--not-before "$not_before"} --output canary-analysis.json; then
+            echo "Candidate ${candidate_sha} already has a verified healthy canary analysis; skipping the sandbox pipelines."
+            reuse_analysis=true
           fi
           cat > "$tmp/projects.tsv" <<'EOF'
           48|python-battlegrounds
@@ -171,10 +187,8 @@ jobs:
                 --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
                 "$GITLAB_API/projects/$project_id/pipelines/$pipeline_id/jobs?per_page=100")"
               while read -r job_id job_name job_status; do
-                trace="$(curl --fail-with-body --silent --show-error \
-                  --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-                  "$GITLAB_API/projects/$project_id/jobs/$job_id/trace" || true)"
-                junit=""
+                junit_file="$tmp/junit-${job_id}.xml"
+                : > "$junit_file"
                 if [[ "$job_name" =~ ^quality-gate:(format|lint|strlint|typecheck|tests)$ ]]; then
                   artifact="$tmp/artifact-${job_id}.zip"
                   if curl --fail-with-body --silent --show-error \
@@ -183,15 +197,14 @@ jobs:
                     --output "$artifact"; then
                     member="$(unzip -Z1 "$artifact" | grep -E 'quality-gate-(format|lint|strlint|typecheck|test)\.xml$' | head -n 1 || true)"
                     if [ -n "$member" ]; then
-                      junit="$(unzip -p "$artifact" "$member")"
+                      unzip -p "$artifact" "$member" > "$junit_file"
                     fi
                   fi
                 fi
                 jq --arg name "$job_name" \
                   --arg status "$job_status" \
-                  --arg trace "$trace" \
-                  --arg junit "$junit" \
-                  '. += [{name: $name, status: $status, trace: $trace, junit: $junit}]' \
+                  --rawfile junit "$junit_file" \
+                  '. += [{name: $name, status: $status, junit: $junit}]' \
                   "$jobs_file" > "$jobs_file.tmp"
                 mv "$jobs_file.tmp" "$jobs_file"
               done < <(jq -r '.[] | [.id, .name, .status] | @tsv' <<<"$jobs")
@@ -224,15 +237,6 @@ jobs:
             exit 1
           fi
 
-          git fetch --tags origin
-          version_tag="$(git tag --points-at "$candidate_sha" 'quality-gate-v*' | sort -V | tail -n 1)"
-          if [ -z "$version_tag" ]; then
-            echo "Healthy canary has no immutable version tag yet; promotion PR will wait."
-            exit 0
-          fi
-
-          test "$(git cat-file -t "refs/tags/$version_tag")" = tag
-          candidate_created="$(git for-each-ref --format='%(creatordate:iso-strict)' "refs/tags/$version_tag")"
           current_sha="$(git rev-parse --verify 'refs/tags/quality-gate-latest^{commit}' 2>/dev/null || true)"
           current=""
           if [ -n "$current_sha" ]; then
@@ -240,7 +244,7 @@ jobs:
           fi
           now="$(date --iso-8601=seconds --utc)"
           decision="$(nix --extra-experimental-features 'nix-command flakes' run --inputs-from . nixpkgs#nushell -- \
-            release/promote.nu validate "$version_tag" "$current" "$candidate_created" "$now" 3 | jq -r .decision)"
+            release/promote.nu validate "$version_tag" "$current" "$candidate_created" "$now" "$bake_days" | jq -r .decision)"
           if [ "$decision" != promote ] || [ "$CREATE_PROMOTION_PR" != true ]; then
             echo "Canary is healthy but is not ready for automatic promotion."
             exit 0
