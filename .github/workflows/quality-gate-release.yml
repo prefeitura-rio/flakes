@@ -11,8 +11,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  actions: read
-  contents: write
+  contents: read
 
 jobs:
   quality-gate-change:
@@ -86,7 +85,7 @@ jobs:
       target_sha: ${{ github.event.workflow_run.head_sha }}
       initial_version: "1.0.0"
       bump: minor
-      floating_tag: quality-gate-latest
+      floating_tag: quality-gate-next
       tag_prefix: quality-gate-v
       toolkit_ref: b8e2a9d72d350362d228f48c84e086d9aec679e9
       require_workflow_gate: true

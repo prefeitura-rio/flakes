@@ -16,11 +16,13 @@ The release sequence is:
 validate master tip
 calculate quality-gate-vX.Y.Z
 validate master tip again
-atomically publish immutable version tag and quality-gate-latest
+atomically publish immutable version tag and quality-gate-next
 ```
 
 The immutable tag is the audit trail. Consumers use `quality-gate-latest`, which
-is moved only by this workflow after the gate passes.
+is promoted separately after the three-day bake period and an approved channel
+PR. The first release creates `quality-gate-next`; `latest` is promoted by the
+Quality Gate Promotion workflow.
 
 The new flakes-based motor starts at `quality-gate-v1.0.0`; the previous
 `quality-gate-v1.x` tags belonged to the frozen implementation in
@@ -32,6 +34,30 @@ systems with the last `quality-gate-v*` tag. Changes to unrelated flakes
 packages, infrastructure profiles or documentation do not create a new
 Quality Gate release. Changes to the Quality Gate bootstrap profile are also
 treated as release-worthy.
+
+## Canary promotion
+
+`release/channels.yaml` declares the stable channel and its three-day bake
+period. A PR changing `latest` is validated by `release/promote.nu` and a push
+of the approved PR promotes `quality-gate-latest`. The manual workflow supports
+an approved emergency rollback to any existing immutable version tag.
+
+Before the first approved promotion, `quality-gate-latest` does not exist. The
+default consumer configuration intentionally fails with an explicit
+unresolved-reference message instead of silently selecting an untested
+revision.
+
+To opt a consumer into the canary during the bake period, set:
+
+- local hooks: `QUALITY_GATE_REF=quality-gate-next`;
+- GitLab CI: `PREFRIO_REF=quality-gate-next`.
+
+The canary is opt-in. `quality-gate-latest` remains the stable channel and is
+only updated by the promotion workflow.
+
+The release and promotion workflows are prepared for a dedicated GitHub App;
+see [the setup runbook](rulesets/APP-SETUP.md). Until that App is installed and
+the tag ruleset is applied, do not publish the first Quality Gate release.
 
 ## Consumer synchronization
 

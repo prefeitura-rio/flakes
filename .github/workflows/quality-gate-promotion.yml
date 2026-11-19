@@ -1,0 +1,316 @@
+name: Quality Gate Promotion
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "release/channels.yaml"
+      - "release/promote.nu"
+      - "release/scripts/move-floating-tag.sh"
+      - ".github/workflows/quality-gate-promotion.yml"
+  push:
+    branches: [master]
+    paths:
+      - "release/channels.yaml"
+      - "release/promote.nu"
+      - "release/scripts/move-floating-tag.sh"
+      - ".github/workflows/quality-gate-promotion.yml"
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      target_tag:
+        description: "Version tag to promote or roll back to"
+        required: true
+        type: string
+      reason:
+        description: "Reason for the emergency promotion/rollback"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# GitHub keeps one running and one pending run per group and cancels the pending
+# one when another arrives. A single group for the whole workflow let a pull
+# request validation cancel a queued promotion, so each job has its own group.
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    name: Validate channel change
+    runs-on: ubuntu-latest
+    concurrency:
+      group: quality-gate-promotion-validate-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - name: Validate promotion decision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          candidate="$(awk -F': *' '$1 == "latest" { print $2 }' release/channels.yaml | tr -d '"')"
+          if [ -z "$candidate" ]; then
+            echo "No stable channel is selected yet; validation is a no-op."
+            exit 0
+          fi
+          bake_days="$(awk -F': *' '$1 == "bake_days" { print $2 }' release/channels.yaml)"
+          test -n "$bake_days"
+          test "$(git cat-file -t "refs/tags/$candidate")" = tag
+          git rev-parse --verify "refs/tags/$candidate^{}" >/dev/null
+          created="$(git for-each-ref --format='%(creatordate:iso-strict)' "refs/tags/$candidate")"
+          current_sha="$(git rev-parse --verify 'refs/tags/quality-gate-latest^{commit}' 2>/dev/null || true)"
+          current=""
+          if [ -n "$current_sha" ]; then
+            current="$(git tag --points-at "$current_sha" 'quality-gate-v*' | head -n 1)"
+          fi
+          now="$(date --iso-8601=seconds --utc)"
+          result="$(
+            nix --extra-experimental-features 'nix-command flakes' run --inputs-from . nixpkgs#nushell -- \
+              release/promote.nu validate "$candidate" "$current" "$created" "$now" "$bake_days"
+          )"
+          echo "$result" | jq .
+          decision="$(echo "$result" | jq -r .decision)"
+          if [ "$decision" != promote ] && [ "$decision" != noop ]; then
+            exit 1
+          fi
+          if [ "$decision" = promote ]; then
+            bake_end="$(date -u -d "$created + ${bake_days} days" +%Y-%m-%dT%H:%M:%SZ)"
+            bash release/scripts/verify-canary-health.sh \
+              --sha "$(git rev-parse --verify "refs/tags/$candidate^{commit}")" \
+              --not-before "$bake_end"
+          fi
+
+  promote:
+    if: github.event_name == 'push'
+    name: Promote quality-gate-latest
+    runs-on: ubuntu-latest
+    environment: quality-gate-release
+    concurrency:
+      group: quality-gate-promote
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: actions/create-github-app-token@0f859bf9e69e887678d5bbfbee594437cb440ffe # v2.1.0
+        id: release-token
+        with:
+          app-id: ${{ secrets.QUALITY_GATE_RELEASE_APP_ID }}
+          private-key: ${{ secrets.QUALITY_GATE_RELEASE_APP_PRIVATE_KEY }}
+          owner: prefeitura-rio
+          repositories: flakes
+          permission-contents: write
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - name: Promote stable channel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          git remote set-url origin "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          candidate="$(awk -F': *' '$1 == "latest" { print $2 }' release/channels.yaml | tr -d '"')"
+          if [ -z "$candidate" ]; then
+            echo "No stable channel is selected yet; promotion is a no-op."
+            exit 0
+          fi
+          bake_days="$(awk -F': *' '$1 == "bake_days" { print $2 }' release/channels.yaml)"
+          test "$(git cat-file -t "refs/tags/$candidate")" = tag
+          git rev-parse --verify "refs/tags/$candidate^{}" >/dev/null
+          created="$(git for-each-ref --format='%(creatordate:iso-strict)' "refs/tags/$candidate")"
+          current_sha="$(git rev-parse --verify 'refs/tags/quality-gate-latest^{commit}' 2>/dev/null || true)"
+          current=""
+          if [ -n "$current_sha" ]; then
+            current="$(git tag --points-at "$current_sha" 'quality-gate-v*' | head -n 1)"
+          fi
+          now="$(date --iso-8601=seconds --utc)"
+          result="$(
+            nix --extra-experimental-features 'nix-command flakes' run --inputs-from . nixpkgs#nushell -- \
+              release/promote.nu validate "$candidate" "$current" "$created" "$now" "$bake_days"
+          )"
+          echo "$result" | jq .
+          decision="$(echo "$result" | jq -r .decision)"
+          if [ "$decision" != promote ] && [ "$decision" != noop ]; then
+            exit 1
+          fi
+          if [ "$decision" = noop ]; then
+            echo "The requested stable version is already active."
+            exit 0
+          fi
+          bake_end="$(date -u -d "$created + ${bake_days} days" +%Y-%m-%dT%H:%M:%SZ)"
+          bash release/scripts/verify-canary-health.sh \
+            --sha "$(git rev-parse --verify "refs/tags/$candidate^{commit}")" \
+            --not-before "$bake_end"
+          bash release/scripts/move-floating-tag.sh --candidate-tag "$candidate"
+
+  emergency:
+    if: github.event_name == 'workflow_dispatch'
+    name: Emergency Quality Gate promotion or rollback
+    runs-on: ubuntu-latest
+    environment: quality-gate-promotion
+    concurrency:
+      group: quality-gate-emergency
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: actions/create-github-app-token@0f859bf9e69e887678d5bbfbee594437cb440ffe # v2.1.0
+        id: release-token
+        with:
+          app-id: ${{ secrets.QUALITY_GATE_RELEASE_APP_ID }}
+          private-key: ${{ secrets.QUALITY_GATE_RELEASE_APP_PRIVATE_KEY }}
+          owner: prefeitura-rio
+          repositories: flakes
+          permission-contents: write
+          permission-pull-requests: write
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - name: Promote or roll back after approval
+        env:
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
+          EMERGENCY_REASON: ${{ inputs.reason }}
+          TARGET_TAG_INPUT: ${{ inputs.target_tag }}
+        run: |
+          set -euo pipefail
+          git remote set-url origin "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          candidate="$TARGET_TAG_INPUT"
+          bake_days="$(awk -F': *' '$1 == "bake_days" { print $2 }' release/channels.yaml)"
+          test "$(git cat-file -t "refs/tags/$candidate")" = tag
+          git rev-parse --verify "refs/tags/$candidate^{}" >/dev/null
+          created="$(git for-each-ref --format='%(creatordate:iso-strict)' "refs/tags/$candidate")"
+          current_sha="$(git rev-parse --verify 'refs/tags/quality-gate-latest^{commit}' 2>/dev/null || true)"
+          current=""
+          if [ -n "$current_sha" ]; then
+            current="$(git tag --points-at "$current_sha" 'quality-gate-v*' | head -n 1)"
+          fi
+          now="$(date --iso-8601=seconds --utc)"
+          result="$(
+            nix --extra-experimental-features 'nix-command flakes' run --inputs-from . nixpkgs#nushell -- \
+              release/promote.nu validate "$candidate" "$current" "$created" "$now" "$bake_days" --force
+          )"
+          echo "$result" | jq .
+          decision="$(echo "$result" | jq -r .decision)"
+          if [ "$decision" != promote ] && [ "$decision" != noop ]; then
+            exit 1
+          fi
+          if [ "$decision" = noop ]; then
+            echo "The requested stable version is already active."
+            exit 0
+          fi
+          bash release/scripts/move-floating-tag.sh --candidate-tag "$candidate"
+
+          declared="$(awk -F': *' '$1 == "latest" { print $2 }' release/channels.yaml | tr -d '"')"
+          if [ "$declared" != "$candidate" ]; then
+            branch="ops/quality-gate-channel-${candidate}-${GITHUB_RUN_ID}"
+            git switch --create "$branch"
+            sed -i -E "s/^latest:.*$/latest: \"$candidate\"/" release/channels.yaml
+            git add release/channels.yaml
+            git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "chore: synchronize stable quality-gate channel"
+            git push --set-upstream origin "$branch"
+            gh pr create \
+              --base master \
+              --head "$branch" \
+              --title "chore: synchronize Quality Gate stable channel to ${candidate}" \
+              --body "$(cat <<EOF
+          This PR synchronizes \`release/channels.yaml\` after an emergency
+          Quality Gate promotion or rollback.
+
+          - Target tag: \`${candidate}\`
+          - Reason: ${EMERGENCY_REASON}
+          - Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          EOF
+            )"
+          fi
+
+  divergence:
+    if: github.event_name == 'schedule'
+    name: Reconcile channel divergence
+    runs-on: ubuntu-latest
+    concurrency:
+      group: quality-gate-divergence
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Open or close divergence issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          expected="$(awk -F': *' '$1 == "latest" { print $2 }' release/channels.yaml | tr -d '"')"
+          assignee="$(awk -F': *' '$1 == "issue_assignee" { print $2 }' release/channels.yaml | tr -d '"')"
+          title="[Quality Gate] release channels diverged"
+          gh label create quality-gate-release --color B60205 --description "Quality Gate release channel reconciliation" --force >/dev/null
+          issue="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')"
+          expected_sha=""
+          actual_sha=""
+          if [ -n "$expected" ]; then
+            expected_sha="$(git rev-parse --verify "refs/tags/$expected^{commit}" 2>/dev/null || true)"
+          fi
+          actual_sha="$(git rev-parse --verify 'refs/tags/quality-gate-latest^{commit}' 2>/dev/null || true)"
+          diverged=false
+          if [ -n "$expected" ] && [ "$expected_sha" != "$actual_sha" ]; then
+            diverged=true
+          elif [ -z "$expected" ] && [ -n "$actual_sha" ]; then
+            diverged=true
+          fi
+          if [ "$diverged" = true ]; then
+            body="$(cat <<EOF
+          <!-- quality-gate-channel-divergence -->
+          The declared stable channel and the mutable tag disagree.
+
+          - Declared in \`release/channels.yaml\`: \`${expected:-<empty>}\`
+          - Declared SHA: \`${expected_sha:-<missing>}\`
+          - Actual \`quality-gate-latest\` SHA: \`${actual_sha:-<missing>}\`
+          - Runbook: [failed-quality-gate-release](https://github.com/${GITHUB_REPOSITORY}/blob/master/docs/runbooks/failed-quality-gate-release.md)
+          EOF
+            )"
+            comment_id=""
+            if [ -n "$issue" ]; then
+              comment_id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${issue}/comments" \
+                --paginate --jq '.[] | select(.body | contains("<!-- quality-gate-channel-divergence -->")) | .id' | tail -n 1)"
+            fi
+            if [ -n "$comment_id" ]; then
+              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${comment_id}" -f body="$body" >/dev/null
+            elif [ -n "$issue" ]; then
+              gh issue comment "$issue" --body "$body" >/dev/null
+            else
+              args=(--title "$title" --body "$body" --label quality-gate-release)
+              [ -n "$assignee" ] && args+=(--assignee "$assignee")
+              gh issue create "${args[@]}"
+            fi
+          elif [ -n "$issue" ]; then
+            comment_id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${issue}/comments" \
+              --paginate --jq '.[] | select(.body | contains("<!-- quality-gate-channel-divergence -->")) | .id' | tail -n 1)"
+            if [ -n "$comment_id" ]; then
+              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${comment_id}" \
+                -f body="<!-- quality-gate-channel-divergence -->"$'\n\n'"Channel divergence resolved: \`$expected\` and \`quality-gate-latest\` now point to the same commit." >/dev/null
+            fi
+            gh issue close "$issue"
+          fi
