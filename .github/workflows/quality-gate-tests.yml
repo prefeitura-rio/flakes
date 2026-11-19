@@ -3,17 +3,6 @@ name: Quality Gate Tests
 on:
   pull_request:
     branches: [master]
-    paths:
-      - "devenv/**"
-      - "devenv.nix"
-      - "devenv.yaml"
-      - "devenv.lock"
-      - "flake.nix"
-      - "flake.lock"
-      - "pkgs/**"
-      - "tests/**"
-      - "release/**"
-      - ".github/**"
   push:
     branches: [master]
   workflow_dispatch:
@@ -29,11 +18,13 @@ jobs:
   tests:
     name: Quality Gate / self-test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Install Nix
         uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
       - name: Use Quality Gate binary caches
@@ -54,7 +45,16 @@ jobs:
             .#quality-gate-typescript \
             --no-link
       - name: Run Quality Gate self-test
+        env:
+          QUALITY_GATE_TEST_REPORT: ${{ runner.temp }}/quality-gate-self-test.xml
         run: devenv tasks run quality-gate:self-test
+      - name: Upload the self-test report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: quality-gate-self-test-junit
+          path: ${{ runner.temp }}/quality-gate-self-test.xml
+          if-no-files-found: ignore
       - name: Run Quality Gate package tests
         run: |
           devenv tasks run complexipy:test
@@ -62,9 +62,12 @@ jobs:
   darwin-build:
     name: Quality Gate / aarch64-darwin build
     runs-on: macos-15
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - name: Install Nix
         uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
       - name: Use Quality Gate binary caches
@@ -88,6 +91,9 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: [tests, darwin-build]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # A cache outage must not stop a release: a miss only costs a local build.
+    continue-on-error: true
     environment: cachix-publish
     permissions:
       contents: read
@@ -96,6 +102,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Install Nix
         uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
       - name: Publish Quality Gate builds
@@ -119,6 +126,9 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: [tests, darwin-build]
     runs-on: macos-15
+    timeout-minutes: 60
+    # A cache outage must not stop a release: a miss only costs a local build.
+    continue-on-error: true
     environment: cachix-publish
     permissions:
       contents: read
@@ -127,6 +137,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Install Nix
         uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
       - name: Publish Quality Gate Darwin builds
