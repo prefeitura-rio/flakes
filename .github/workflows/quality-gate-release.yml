@@ -21,6 +21,7 @@ jobs:
       contents: read
     outputs:
       changed: ${{ steps.compare.outputs.changed }}
+      bump: ${{ steps.compare.outputs.bump }}
     steps:
       - name: Checkout target commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -28,12 +29,15 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
       - name: Install Nix
         uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
-      - name: Use devenv binary cache
-        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - name: Use Quality Gate binary caches
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
-          name: devenv
+          name: prefeitura-rio
+          extraPullNames: devenv
+          skipPush: true
       - name: Compare Quality Gate derivations
         id: compare
         env:
@@ -45,21 +49,35 @@ jobs:
           if [ -z "$previous_tag" ]; then
             echo "No previous Quality Gate release exists; the first release is eligible."
             echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "bump=minor" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          if ! git diff --quiet "$previous_tag" "$TARGET_SHA" -- devenv/quality-gate.nix; then
-            echo "The Quality Gate bootstrap profile changed."
+          bump="$(bash release/scripts/compute-bump.sh --previous-tag "$previous_tag" --target-sha "$TARGET_SHA")"
+          echo "bump=$bump" >> "$GITHUB_OUTPUT"
+
+          # The bootstrap profile and its runner are imported by consumers from
+          # this repository, outside the derivations of the four apps, so a change
+          # to either one must also go through a release and its bake time.
+          if ! git diff --quiet "$previous_tag" "$TARGET_SHA" -- devenv/quality-gate.nix devenv/files/quality-gate/runner.nix; then
+            echo "The Quality Gate bootstrap profile or its runner changed."
             echo "changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           for system in x86_64-linux aarch64-linux aarch64-darwin; do
-            for app in quality-gate quality-gate-python quality-gate-go quality-gate-typescript; do
-              current="$(nix eval --raw \
-                "github:prefeitura-rio/flakes/${TARGET_SHA}#packages.${system}.${app}.drvPath")"
-              previous="$(nix eval --raw \
-                "github:prefeitura-rio/flakes/${previous_tag}#packages.${system}.${app}.drvPath")"
+            for app in quality-gate quality-gate-detect quality-gate-python quality-gate-go quality-gate-typescript; do
+              if ! current="$(nix eval --raw \
+                "github:prefeitura-rio/flakes/${TARGET_SHA}#packages.${system}.${app}.drvPath" 2>/dev/null)"; then
+                echo "Unable to evaluate $app for $system at target; release comparison failed."
+                exit 1
+              fi
+              if ! previous="$(nix eval --raw \
+                "github:prefeitura-rio/flakes/${previous_tag}#packages.${system}.${app}.drvPath" 2>/dev/null)"; then
+                echo "$app is new since $previous_tag for $system."
+                echo "changed=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
               if [ "$current" != "$previous" ]; then
                 echo "$app changed for $system:"
                 echo "  previous: $previous"
@@ -79,12 +97,12 @@ jobs:
     permissions:
       actions: read
       contents: write
-    uses: prefeitura-rio/actions/.github/workflows/release.yml@b8e2a9d72d350362d228f48c84e086d9aec679e9
+    uses: prefeitura-rio/actions/.github/workflows/release.yml@f7f930e3a1ee9306fe7a7f2a780c3747803bbee3
     with:
       release_branch: master
       target_sha: ${{ github.event.workflow_run.head_sha }}
       initial_version: "1.0.0"
-      bump: minor
+      bump: ${{ needs.quality-gate-change.outputs.bump }}
       floating_tag: quality-gate-next
       tag_prefix: quality-gate-v
       toolkit_ref: b8e2a9d72d350362d228f48c84e086d9aec679e9
@@ -92,3 +110,7 @@ jobs:
       required_workflow: Quality Gate Tests
       git_author_name: CI Release Bot
       git_author_email: 41898282+github-actions[bot]@users.noreply.github.com
+      environment: quality-gate-release
+    secrets:
+      QUALITY_GATE_RELEASE_APP_ID: ${{ secrets.QUALITY_GATE_RELEASE_APP_ID }}
+      QUALITY_GATE_RELEASE_APP_PRIVATE_KEY: ${{ secrets.QUALITY_GATE_RELEASE_APP_PRIVATE_KEY }}

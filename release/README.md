@@ -59,6 +59,14 @@ The release and promotion workflows are prepared for a dedicated GitHub App;
 see [the setup runbook](rulesets/APP-SETUP.md). Until that App is installed and
 the tag ruleset is applied, do not publish the first Quality Gate release.
 
+The canary analysis workflow triggers the five sandbox pipelines with the
+candidate SHA, waits for all Quality Gate jobs, downloads their traces and
+compares them with `release/canary-expectations.yaml`. A failed check is
+healthy only when it is an expected finding for that fixture. Engine markers
+such as exit code 3, missing cache/configuration, permission errors or runner
+failures always make the candidate unhealthy. Healthy candidates that complete
+the bake period produce an automated promotion PR.
+
 ## Consumer synchronization
 
 The GitLab adapter resolves `quality-gate-latest` to one commit SHA at the start
@@ -82,3 +90,16 @@ scripts.
 
 The release toolkit's contract tests run in the `actions` repository, which is
 the owner of that reusable release infrastructure.
+
+## Binary cache
+
+The Quality Gate workflows use the public `prefeitura-rio` Cachix cache and
+also pull the public `devenv` cache. The cache stores the Quality Gate-specific
+derivations that are not available from `cache.nixos.org`, notably the
+`complexipy` package and the small flake wrappers.
+
+The GitHub secret `CACHIX_AUTH_TOKEN` is used only by trusted builds on
+`master` (or an explicitly approved manual run) to publish results. Pull
+requests can read the public cache but never push to it. A cache miss remains
+safe: Nix falls back to the official cache and builds the missing derivation
+locally.

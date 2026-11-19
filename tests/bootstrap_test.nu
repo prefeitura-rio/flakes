@@ -7,7 +7,7 @@ use support/qg.nu *
 # remote and a stand-in `nix`.
 
 def build-runner []: nothing -> path {
-    let expression = $"let flake = builtins.getFlake \"path:($FLAKE)\"; pkgs = import flake.inputs.nixpkgs-quality-gate { system = builtins.currentSystem; }; in import ($FLAKE)/devenv/files/quality-gate/runner.nix { inherit pkgs; }"
+    let expression = $"let flake = builtins.getFlake \"git+file://($FLAKE)\"; pkgs = import flake.inputs.nixpkgs-quality-gate { system = builtins.currentSystem; }; in import ($FLAKE)/devenv/files/quality-gate/runner.nix { inherit pkgs; }"
     let result = ^nix --extra-experimental-features 'nix-command flakes' build --impure --no-link --print-out-paths --expr $expression | complete
     if $result.exit_code != 0 {
         error make {msg: $'could not build the runner: ($result.stderr)'}
@@ -170,7 +170,7 @@ def test-runner-dispatches-each-command-to-the-matching-app [] {
             {arguments: [lint go], app: quality-gate-go}
             {arguments: [format python ruff], app: quality-gate-python}
             {arguments: [category lint], app: quality-gate}
-            {arguments: [detect], app: quality-gate}
+            {arguments: [detect], app: quality-gate-detect}
         ]
         let failures = $cases | each {|case|
             '' | save --force $fixture.log

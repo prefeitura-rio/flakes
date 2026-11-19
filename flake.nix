@@ -133,7 +133,11 @@
             nushell
           ];
           text = ''
-            exec ${pkgs.nushell}/bin/nu ${./devenv/files/quality-gate/quality-gate.nu} "$@"
+            if [ "$#" -ne 1 ] || [ "$1" != detect ]; then
+              echo "quality-gate-detect only supports the 'detect' command." >&2
+              exit 2
+            fi
+            exec ${pkgs.nushell}/bin/nu ${./devenv/files/quality-gate/quality-gate.nu} detect
           '';
         };
     in
