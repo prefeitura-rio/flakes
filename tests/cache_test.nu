@@ -148,7 +148,9 @@ def test_every_job_using_a_protected_secret_runs_in_its_environment [] {
     let findings = workflow-files | each {|file|
         let workflow = parse-workflow $file
         $workflow.jobs | items {|name, job|
-            let used = $protected | where {|secret| (($job | to json) | str contains $'secrets.($secret)') }
+            let text = $job | to json
+            let indexed = {|secret| $text =~ (r#'secrets\s*\[\s*['"]'# + $secret + r#'['"]'#) }
+            let used = $protected | where {|secret| ($text | str contains $'secrets.($secret)') or (do $indexed $secret) }
             if ($used | is-empty) { return null }
             let environment = job-environment $job
             $used | each {|secret|
@@ -166,6 +168,5 @@ def test_every_job_using_a_protected_secret_runs_in_its_environment [] {
 def test_the_secret_check_sees_every_protected_secret [] {
     let seen = workflow-files | each {|file| open --raw $file } | str join "\n"
     let missing = $SECRET_ENVIRONMENTS | columns | where {|secret| not ($seen | str contains $'secrets.($secret)') }
-    # GITLAB_CANARY_TOKEN only exists from the canary analysis PR onwards.
-    assert equal ($missing | where {|secret| $secret != GITLAB_CANARY_TOKEN }) [] $'secrets no longer referenced: ($missing | str join ", ")'
+    assert equal $missing [] $'secrets no longer referenced: ($missing | str join ", ")'
 }
