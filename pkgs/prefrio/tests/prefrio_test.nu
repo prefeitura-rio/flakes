@@ -549,7 +549,7 @@ def prefrio-tf-plan-needs-a-choice-when-several-units-remain []: record -> nothi
         let result = run-tf $fixture plan ...$args
         let label = $args | str join " "
         assert ($result.exit_code != 0) $"plan ($label) should fail."
-        assert ($result.stderr =~ "skim plugin is not loaded") $"plan ($label): ($result.stderr)"
+        assert ($result.stderr =~ "No unit selected") $"plan ($label): ($result.stderr)"
         assert ($result.stderr =~ "--all") $"plan ($label): ($result.stderr)"
     }
     assert (not ($fixture.terragrunt_args | path exists)) "An ambiguous selection reached Terragrunt."
@@ -703,8 +703,8 @@ def prefrio-tf-edit-vars-needs-one-existing-file []: record -> nothing {
 
     write-file "{}" ($units | path join b default.tfvars.sops.json)
     let several = run-tf $fixture edit-vars
-    assert ($several.exit_code != 0)
-    assert ($several.stderr =~ "skim plugin is not loaded")
+    assert equal $several.exit_code 0 $several.stderr
+    assert ($several.stderr =~ "No variables file selected")
 
     try { rm --force ($units | path join a default.tfvars.sops.json) ($units | path join b default.tfvars.sops.json) } catch {|err| test-error $err.msg }
     let none = run-tf $fixture edit-vars

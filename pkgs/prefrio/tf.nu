@@ -1,6 +1,5 @@
 use ./lib.nu [run-command fail is-file project-root find-project-dir say ok]
 
-const SKIM_HEIGHT = "40%"
 const PLAN_DIR = "terragrunt.plan"
 const PLAN_FILE = "tfplan.tfplan"
 
@@ -62,22 +61,10 @@ def candidate-units [units_dir: path, selection: record]: nothing -> list<string
     $matching
 }
 
-# Pick one item with skim; null when nothing is chosen, fail when the plugin is missing.
-def pick-one [prompt: string, missing_plugin_hint: string]: list<string> -> oneof<string, nothing> {
+# Pick one item with the builtin fuzzy selector; null when nothing is chosen or no terminal exists.
+def pick-one [prompt: string]: list<string> -> oneof<string, nothing> {
     let items = $in
-    if (scope commands | where name == sk | is-empty) {
-        fail $"The skim plugin is not loaded. ($missing_plugin_hint)" {
-            command: picker
-            span: (metadata $prompt).span
-        }
-    }
-
-    let choice = try {
-        $items | sk --height $SKIM_HEIGHT --prompt $prompt | default null
-    } catch {
-        null
-    }
-    if $choice == "" { null } else { $choice }
+    try { $items | input list --fuzzy $prompt } catch { null }
 }
 
 # Remove the saved plans, reporting a useful error.
@@ -97,7 +84,7 @@ def run-plan [selection: record, ...extra: string]: nothing -> nothing {
     let chosen = if $selection.all or ($candidates | length) == 1 {
         $candidates
     } else {
-        let choice = $candidates | pick-one "unit> " "Pass --all or --module NAME."
+        let choice = $candidates | pick-one "unit> "
         if $choice == null {
             fail "No unit selected. Pass --all or --module NAME." {
                 command: terragrunt
@@ -170,7 +157,7 @@ def choose-tfvars-file [root: path]: nothing -> oneof<string, nothing> {
             $files | first
         }
         _ => {
-            let choice = $files | path relative-to $root | pick-one "tfvars> " "Pass a file path or run prefrio from the Nix package."
+            let choice = $files | path relative-to $root | pick-one "tfvars> "
             if $choice == null { null } else {
                 $root | path join $choice
             }

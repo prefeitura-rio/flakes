@@ -23,16 +23,14 @@
           tfsec
         ];
 
-        nu = nushell.withPlugins [ nushellPlugins.skim ];
-
         cli = writeShellApplication {
           name = "prefrio";
           text = ''
-            exec ${nu}/bin/nu ${scripts}/prefrio "$@"
+            exec ${nushell}/bin/nu ${scripts}/prefrio "$@"
           '';
           runtimeInputs = tools ++ [
             git
-            nu
+            nushell
           ];
         };
       in
