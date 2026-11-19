@@ -1,5 +1,6 @@
 use std/assert
 use std/testing *
+use support/isolation.nu
 
 source ../release/promote.nu
 
@@ -91,7 +92,10 @@ def test_canary_rejects_invalid_version_tags [] {
     let cli_result = (^nu $PROMOTE_SCRIPT validate quality-gate-next '' 2026-01-01 2026-01-10 3 --force | complete)
     assert equal $cli_result.exit_code 0
     assert ($cli_result.stdout | str contains '"decision": "reject"')
-    let tag_result = (^bash $MOVE_TAG_SCRIPT --candidate-tag quality-gate-next | complete)
+    # Never against the checkout the tests run from: that one has a real `origin`.
+    let empty = mktemp --directory | str trim
+    let tag_result = (^bash $MOVE_TAG_SCRIPT --repository $empty --candidate-tag quality-gate-next | complete)
+    rm --recursive --force $empty
     assert equal $tag_result.exit_code 1
 }
 
@@ -162,7 +166,7 @@ def test_canary_floating_tag_move_loses_a_race_against_a_concurrent_promotion []
         assert equal $first.exit_code 0 $first.stderr
 
         let racer = (^git --git-dir $bare rev-parse 'refs/tags/quality-gate-v1.2.0^{commit}' | str trim)
-        let real_git = (^which git | str trim)
+        let real_git = (which git | first | get path)
         mkdir $bin
         $"#!/bin/sh\n'($real_git)' \"$@\"\nstatus=$?\ncase \" $* \" in\n  *\" ls-remote \"*) '($real_git)' --git-dir '($bare)' update-ref refs/tags/quality-gate-latest ($racer) ;;\nesac\nexit $status\n" | save --force ($bin | path join git)
         ^chmod +x ($bin | path join git)

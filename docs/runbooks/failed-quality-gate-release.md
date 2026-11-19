@@ -36,9 +36,29 @@ declared channel and the tag agree.
 
 There is no emergency path to a newer version. A fixed release must complete
 the three-day bake and the canary analysis, and is promoted by the normal PR.
+The promotion needs a healthy canary analysis made **after** the bake ended
+(`release/scripts/verify-canary-health.sh`): the PR is validated against it and
+the `promote` job refuses to move the tag without it. If the PR was approved by
+hand before that analysis exists, `promote` fails and nothing moves; run the
+`Quality Gate Canary Analysis` workflow for the candidate and run `promote` again.
+
 If the workflows or GitHub Actions are unavailable, a repository administrator
 can move the tag manually with the release App credentials, following
 `release/rulesets/APP-SETUP.md`, and must record the reason in the incident.
+That path needs the App private key, so its safekeeping is part of the
+preparation, not of the incident: the key must be kept in the company's password
+vault, readable by at least two administrators, and rotated after every use.
+The vault and the two people are decided by the owners of the Quality Gate and
+are recorded in `APP-SETUP.md`.
+
+### A released version cannot be changed
+
+`protect-quality-gate-version-tags` forbids updating or deleting any
+`quality-gate-v*` tag, and it has **no bypass actor**, not even the release App.
+A bad release is never fixed by moving its tag: publish a new version and roll
+`quality-gate-latest` back meanwhile. If a version tag really has to go (for
+example one published by mistake), an organization owner disables that ruleset,
+removes the tag and enables it again, and the incident records it.
 
 ## Safety
 

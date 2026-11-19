@@ -31,22 +31,30 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: quality-gate-promotion
-  cancel-in-progress: false
-
+# GitHub keeps one running and one pending run per group and cancels the pending
+# one when another arrives. A single group for the whole workflow let a pull
+# request validation cancel a queued promotion, so each job has its own group.
 jobs:
   validate:
     if: github.event_name == 'pull_request'
     name: Validate channel change
     runs-on: ubuntu-latest
+    concurrency:
+      group: quality-gate-promotion-validate-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
       - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
       - name: Validate promotion decision
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           candidate="$(awk -F': *' '$1 == "latest" { print $2 }' release/channels.yaml | tr -d '"')"
@@ -74,14 +82,24 @@ jobs:
           if [ "$decision" != promote ] && [ "$decision" != noop ]; then
             exit 1
           fi
+          if [ "$decision" = promote ]; then
+            bake_end="$(date -u -d "$created + ${bake_days} days" +%Y-%m-%dT%H:%M:%SZ)"
+            bash release/scripts/verify-canary-health.sh \
+              --sha "$(git rev-parse --verify "refs/tags/$candidate^{commit}")" \
+              --not-before "$bake_end"
+          fi
 
   promote:
     if: github.event_name == 'push'
     name: Promote quality-gate-latest
     runs-on: ubuntu-latest
     environment: quality-gate-release
+    concurrency:
+      group: quality-gate-promote
+      cancel-in-progress: false
     permissions:
-      contents: write
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -95,9 +113,11 @@ jobs:
           private-key: ${{ secrets.QUALITY_GATE_RELEASE_APP_PRIVATE_KEY }}
           owner: prefeitura-rio
           repositories: flakes
+          permission-contents: write
       - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
       - name: Promote stable channel
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
         run: |
           set -euo pipefail
@@ -130,6 +150,10 @@ jobs:
             echo "The requested stable version is already active."
             exit 0
           fi
+          bake_end="$(date -u -d "$created + ${bake_days} days" +%Y-%m-%dT%H:%M:%SZ)"
+          bash release/scripts/verify-canary-health.sh \
+            --sha "$(git rev-parse --verify "refs/tags/$candidate^{commit}")" \
+            --not-before "$bake_end"
           bash release/scripts/move-floating-tag.sh --candidate-tag "$candidate"
 
   emergency:
@@ -137,9 +161,11 @@ jobs:
     name: Emergency Quality Gate promotion or rollback
     runs-on: ubuntu-latest
     environment: quality-gate-promotion
+    concurrency:
+      group: quality-gate-emergency
+      cancel-in-progress: false
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -153,6 +179,8 @@ jobs:
           private-key: ${{ secrets.QUALITY_GATE_RELEASE_APP_PRIVATE_KEY }}
           owner: prefeitura-rio
           repositories: flakes
+          permission-contents: write
+          permission-pull-requests: write
       - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
       - name: Promote or roll back after approval
         env:
@@ -218,6 +246,9 @@ jobs:
     if: github.event_name == 'schedule'
     name: Reconcile channel divergence
     runs-on: ubuntu-latest
+    concurrency:
+      group: quality-gate-divergence
+      cancel-in-progress: true
     permissions:
       contents: read
       issues: write
@@ -226,6 +257,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
       - name: Open or close divergence issue
         env:
           GH_TOKEN: ${{ github.token }}
