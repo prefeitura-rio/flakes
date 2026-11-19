@@ -53,3 +53,28 @@ def test_environment_gated_jobs_never_run_on_pull_requests [] {
     } | flatten
     assert ($offenders | is-empty) ($offenders | str join "\n")
 }
+
+@test
+def test_the_canary_analysis_fails_loudly_when_it_cannot_promote [] {
+    let workflow = open --raw ($WORKFLOWS | path join quality-gate-canary-analysis.yml) | from yaml
+    let step = $workflow.jobs.analyze.steps | first
+    assert equal $step.name 'Require the release App when a promotion is expected'
+    assert (($step.run | str contains '${{') | not $in) 'the check must read env vars, not interpolate expressions'
+    let cases = [
+        {expected: true, has_app: true, outcome: pass}
+        {expected: true, has_app: false, outcome: fail}
+        {expected: false, has_app: false, outcome: pass}
+        {expected: false, has_app: true, outcome: pass}
+    ]
+    let failures = $cases | each {|case|
+        let result = with-env {PROMOTION_EXPECTED: ($case.expected | into string), HAS_RELEASE_APP: ($case.has_app | into string)} {
+            ^bash -c $step.run | complete
+        }
+        let actual = if $result.exit_code == 0 { 'pass' } else { 'fail' }
+        if $actual != $case.outcome { $'expected=($case.expected) app=($case.has_app): wanted ($case.outcome), got ($actual)' }
+    } | compact
+    assert ($failures | is-empty) ($failures | str join "\n")
+    let job_env = $workflow.jobs.analyze.env
+    assert ($job_env.PROMOTION_EXPECTED | str contains "github.event_name != 'workflow_dispatch'")
+    assert ($job_env.PROMOTION_EXPECTED | str contains 'inputs.create_promotion_pr')
+}
