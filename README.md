@@ -25,10 +25,20 @@ inputs:
         follows: nixpkgs
   prefrio:
     url: github:prefeitura-rio/flakes
+  quality-gate:
+    url: github:prefeitura-rio/flakes/quality-gate-latest
 imports:
   - prefrio/devenv/infra.nix
-  - prefrio/devenv/quality-gate.nix
+  - quality-gate/devenv/quality-gate.nix
 ```
+
+The Quality Gate profile has its own input, pinned to the `quality-gate-latest`
+channel. The engine already runs from that channel; this makes the bootstrap
+(the hook wrapper and the runner) follow it as well, so a change to either one
+reaches consumers only after its bake time. Pinning the whole `prefrio` input to
+the channel would also freeze the infrastructure profile, which has its own
+cadence. The profile uses nothing from the other inputs, so a separate input is
+enough.
 
 Set `profile: quality-gate` when the repository must install the quality-gate
 hooks on ordinary `devenv shell` entry. Alternatively, select the profile once
@@ -140,8 +150,8 @@ devenv --profile quality-gate tasks run quality-gate:tests
 | `quality-gate:format`, `:lint`, `:strlint`, `:typecheck`                   | one category for every detected project                                          |
 | `quality-gate:detect`                                                      | lists the detected projects without running checks                               |
 | `quality-gate:tests`                                                       | the repository tests of every detected project                                  |
-| `format:<language>:all`, `lint:<language>:all`                             | every format or lint check of one language (`python`, `go`, `typescript`)        |
-| `format:<language>:<tool>`, `lint:<language>:<tool>`                       | a single check, for example `lint:python:basedpyright`                           |
+| `format:<language>:all`, `lint:<language>:all`, `typecheck:<language>:all` | every format, lint or typecheck check of one language (`python`, `go`, `typescript`) |
+| `format:<language>:<tool>`, `lint:<language>:<tool>`, `typecheck:<language>:<tool>` | a single check, for example `typecheck:python:basedpyright`                |
 
 `strlint` is the structural lint, done with ast-grep. `quality-gate:all` does not run `quality-gate:tests`: static policy is central, while the test contract belongs to each repository.
 
@@ -151,7 +161,7 @@ A developer can run any granular task manually:
 
 ```bash
 devenv --profile quality-gate tasks run lint:python:complexipy
-devenv --profile quality-gate tasks run lint:python:basedpyright
+devenv --profile quality-gate tasks run typecheck:python:basedpyright
 devenv --profile quality-gate tasks run lint:python:all
 ```
 
@@ -236,7 +246,7 @@ Projects are found recursively under `QUALITY_GATE_PROJECT_DIR`, which defaults 
 | Go         | `go.mod`                               |
 | TypeScript | `package.json` and `tsconfig.json`     |
 
-Each project is checked on its own, so a monorepo reports one result per project, language and check. Inside a Git repository, discovery uses tracked and non-ignored untracked files, so directories such as `tools/` are valid projects while `node_modules`, `.venv`, `dist` and other ignored files are excluded. Outside Git, a short fallback list excludes generated and dependency directories. The command fails when no project is found.
+Each project is checked on its own, so a monorepo reports one result per project, language and check. A project inside another project of the same language is checked as itself only: its files are not checked again by the project around it, and a change inside it selects it, not the outer one, in the hooks. A workspace member (npm, pnpm or uv) uses the lockfile, `.node-version` and `node_modules` of the workspace root. Inside a Git repository, discovery uses tracked and non-ignored untracked files, so directories such as `tools/` are valid projects while `node_modules`, `.venv`, `dist` and other ignored files are excluded. Outside Git, a short fallback list excludes generated and dependency directories. The command fails when no project is found.
 
 ### Checks
 
@@ -250,9 +260,15 @@ TypeScript handling is framework aware:
 
 - Next.js enables the Oxlint React, JSX accessibility and Next.js plugins and ignores `.next/` and `out/`. React projects enable the React and JSX accessibility plugins.
 - Vue `<script>` blocks, including the `setup` and `lang` variants, are scanned by the shared ast-grep rules.
-- Typecheck is always invoked by the central runner (`tsc` or `vue-tsc`) with
-  the mandatory Quality Gate compiler options. Nuxt projects run `nuxt prepare`
-  first. A consumer's `scripts.typecheck` is not used for this global check.
+- Typecheck is always invoked by the central runner (`tsc` or `vue-tsc`, the
+  project's own, from `node_modules/.bin`) with the mandatory Quality Gate
+  compiler options. The same compiler expands the config, so `.vue` files are
+  listed. Nuxt projects run `nuxt prepare` first. A consumer's
+  `scripts.typecheck` is not used for this global check.
+- The files come from the project's `files` and `include`. Its `exclude` is not
+  honoured (only `node_modules`, `bower_components`, `jspm_packages` and
+  `outDir` stay out): to leave code out of the Quality Gate, list it in
+  `.quality-gate/exclude`, where it is reviewed and shown in the report.
 - Generated solution-reference configs use the `.quality-gate-tsconfig.*.json`
   name beside the source config and are removed after the check; consumers
   should ignore that pattern.
@@ -260,7 +276,7 @@ TypeScript handling is framework aware:
 - Typecheck needs a `.node-version` file, or `QUALITY_GATE_NODE_VERSION`.
 - `quality-gate:tests` requires `scripts.test` in `package.json` for TypeScript projects.
 
-Python projects with a `pyproject.toml` are synchronized with `uv sync --frozen --all-groups`, so they need a compatible `uv.lock`.
+Python projects with a `pyproject.toml` are synchronized with `uv sync --locked --all-groups`, so they need a compatible `uv.lock`, found in the project or in a parent directory up to the repository root (a uv workspace member uses the lock of its root). The environment lives in the Quality Gate cache (`$XDG_CACHE_HOME/quality-gate/venvs`), never in the repository: the developer's own `.venv` is not touched, and `uv sync` cannot prune packages installed by hand.
 The temporary basedpyright configuration is created as
 `.quality-gate-pyrightconfig.json` beside the project config and removed after
 the check; consumers should ignore that exact filename in `.gitignore`.
@@ -293,6 +309,9 @@ disable an individual rule. A nested `.quality-gate/exclude` is rejected. The
 runner applies the paths to project discovery, auto-fix,
 Python/Ruff, complexipy, TypeScript/Oxlint/Oxfmt/tsc, ast-grep, basedpyright,
 golangci-lint and the Go package list used by `go vet` and `go build`.
+Generated code is analysed like any other: golangci-lint does not skip a file
+because it says `Code generated ... DO NOT EDIT`, since a comment is enough to
+turn the Quality Gate off for a file. List generated code here.
 Keep this file under CODEOWNERS review in consumers.
 
 ```text
@@ -300,6 +319,14 @@ Keep this file under CODEOWNERS review in consumers.
 generated/
 db/migrations/**
 ```
+
+### Check names
+
+A check is identified as `<category>:<language>:<tool>`, for example
+`format:go:gofumpt`, `lint:python:ruff`, `strlint:...` per language and
+`typecheck:python:basedpyright`, `typecheck:typescript:tsc`,
+`typecheck:go:build`. These names are what the JUnit reports, the canary
+expectations and the devenv tasks use, so a name is part of the contract.
 
 ### Reports
 
@@ -344,7 +371,8 @@ window. In GitLab CI, the project and exact deadline must also be present in
 the central `policy/report-only.yaml` allowlist. The adapter provides the
 project through `QUALITY_GATE_REPORT_PROJECT`; when `CI` is set and it is
 missing, report-only mode is refused. Removing the variable returns
-the consumer to blocking mode.
+the consumer to blocking mode. Report-only applies to the static checks: the
+project's own tests keep blocking.
 
 ### Runtimes
 
@@ -374,14 +402,24 @@ The classification follows the tool's exit code, not its text:
 | `tsc`, `vue-tsc` | exit 1 or 2 | any other non-zero exit |
 | `pytest`, `go test`, `npm test`, `pnpm test` | any failure | - |
 | `uv sync`, `npm ci`, `pnpm install` | - | any failure |
+| a missing lockfile, `.node-version`, `uv.lock`, project compiler or `scripts.test`, or an invalid `tsconfig.json` | the consumer's configuration | - |
 
 Oxlint reports an invalid configuration with exit 1, so that one message is
 treated as `engine`. The canary analysis considers any `engine` result a failure
 of the Quality Gate itself.
 
 Inline suppressions must identify the specific rule and include a justification.
-The central Ruff, golangci-lint, basedpyright and Oxlint policies reject
-blanket suppressions.
+The central policies reject blanket suppressions, in every language:
+
+| Language | Rejected | By |
+| --- | --- | --- |
+| TypeScript | `eslint-disable` / `oxlint-disable` without a rule name, `@ts-nocheck`; `@ts-ignore` and `@ts-expect-error` need a description | the `no-blanket-disable` rule, Oxlint `ban-ts-comment` |
+| Python | `# noqa` and `# ruff: noqa` without a code, `# type: ignore` without a rule, `# pyright:` / `# basedpyright:` directives that change the mode or switch rules off (only `# pyright: ignore[rule]` is accepted) | Ruff `PGH003`/`PGH004`, basedpyright `reportIgnoreCommentWithoutRule`, the `no-pyright-directive` rule |
+| Go | `//nolint` without a linter, `//nolint:all`, or without an explanation | `nolintlint` |
+
+A file cannot opt out of the policy: not with a comment, not with a generated-file
+header, not through its own `tsconfig` `exclude`. Only `.quality-gate/exclude`
+can, and it is capped and listed in every report.
 
 ## Development
 
@@ -397,8 +435,23 @@ devenv tasks run pkgs:test # package tests plus internal flakes tests
 ```
 
 The self-test must not depend on the machine that runs it. Inside `devenv shell`
-the fake tools run under `dash` (the `/bin/sh` of Ubuntu runners) and the tests
-ignore your global Git configuration. Before pushing, run the suite in a clean
+the fake tools run under `dash` (the `/bin/sh` of Ubuntu runners) and every test
+file ignores your global Git configuration (`tests/support/isolation.nu`). The
+shell carries the same nushell, ast-grep, uv and `complexipy` as the released
+apps, from the `nixpkgs-quality-gate` revision of `flake.lock`; a test fails if
+`devenv.lock` and `flake.lock` stop pinning the same revision.
+
+Two environment variables help while developing:
+
+- `QUALITY_GATE_UPDATE_SNAPSHOT=1` rewrites `tests/snapshots/quality-gate-policy.json`
+  instead of comparing with it. Review the diff: it is the review of the policy.
+- `QUALITY_GATE_TEST_REPORT=<file>` writes a JUnit report of the self-test and
+  fails the run when fewer test cases ran than were discovered. The workflow
+  sets it and uploads the report.
+
+New files are visible to the flake apps only once Git knows them
+(`git add -N <file>` is enough): a rule or a fixture that Git ignores is silently
+missing from the apps the tests run. Before pushing, run the suite in a clean
 Ubuntu container with no Git identity and an unprivileged user:
 
 ```bash

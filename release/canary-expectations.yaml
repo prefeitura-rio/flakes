@@ -1,0 +1,108 @@
+version: 1
+required_jobs:
+  - quality-gate:detect
+  - quality-gate:format
+  - quality-gate:lint
+  - quality-gate:strlint
+  - quality-gate:typecheck
+  - quality-gate:tests
+projects:
+  - id: 48
+    name: python-battlegrounds
+    ref: main
+    expected_findings:
+      - format:python:ruff
+      - lint:python:ruff
+      - lint:python:complexipy
+      - typecheck:python:basedpyright
+    required_checks:
+      - format:python:ruff
+      - lint:python:ruff
+      - lint:python:complexipy
+      - typecheck:python:basedpyright
+      - lint:python:strlint
+    expected_skipped:
+      - quality-gate:tests
+  - id: 49
+    name: go-battlegrounds
+    ref: main
+    expected_findings:
+      - format:go:gofumpt
+      - format:go:goimports
+      - lint:go:golangci
+      - lint:go:vet
+      - lint:go:strlint
+    required_checks:
+      - format:go:gofumpt
+      - format:go:goimports
+      - lint:go:golangci
+      - lint:go:strlint
+      - lint:go:vet
+      - typecheck:go:build
+    expected_skipped:
+      - quality-gate:tests
+  - id: 50
+    name: typescript-battlegrounds
+    ref: main
+    expected_findings:
+      - format:typescript:oxfmt
+      - lint:typescript:oxlint
+      - lint:typescript:strlint
+    required_checks:
+      - format:typescript:oxfmt
+      - lint:typescript:oxlint
+      - lint:typescript:strlint
+      - typecheck:typescript:tsc
+    expected_skipped:
+      - quality-gate:tests
+  - id: 51
+    name: vue-battlegrounds
+    ref: main
+    expected_findings:
+      - format:typescript:oxfmt
+      - lint:typescript:oxlint
+      - lint:typescript:strlint
+    required_checks:
+      - format:typescript:oxfmt
+      - lint:typescript:oxlint
+      - lint:typescript:strlint
+      - typecheck:typescript:tsc
+    expected_skipped:
+      - quality-gate:tests
+  - id: 78
+    name: multi-repo-battlegrounds
+    ref: main
+    expected_findings:
+      - format:python:ruff
+      - format:go:gofumpt
+      - format:go:goimports
+      - format:typescript:oxfmt
+      - lint:python:ruff
+      - lint:python:complexipy
+      - lint:go:golangci
+      - lint:go:vet
+      - lint:typescript:oxlint
+      - typecheck:python:basedpyright
+      - lint:python:strlint
+      - lint:go:strlint
+      - lint:typescript:strlint
+      - typecheck:go:build
+      - typecheck:typescript:tsc
+    required_checks:
+      - format:python:ruff
+      - lint:python:ruff
+      - lint:python:complexipy
+      - typecheck:python:basedpyright
+      - lint:python:strlint
+      - format:go:gofumpt
+      - format:go:goimports
+      - lint:go:golangci
+      - lint:go:strlint
+      - lint:go:vet
+      - typecheck:go:build
+      - format:typescript:oxfmt
+      - lint:typescript:oxlint
+      - lint:typescript:strlint
+      - typecheck:typescript:tsc
+    expected_skipped:
+      - quality-gate:tests
