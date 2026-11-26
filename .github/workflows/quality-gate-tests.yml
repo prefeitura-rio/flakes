@@ -1,0 +1,157 @@
+name: Quality Gate Tests
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: quality-gate-tests-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Quality Gate / self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - name: Use Quality Gate binary caches
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: prefeitura-rio
+          extraPullNames: devenv
+          skipPush: true
+      - name: Install devenv
+        run: nix profile install --inputs-from . nixpkgs#devenv
+      - name: Validate the flake app
+        run: |
+          nix build \
+            .#quality-gate \
+            .#quality-gate-detect \
+            .#quality-gate-python \
+            .#quality-gate-go \
+            .#quality-gate-typescript \
+            --no-link
+      - name: Run Quality Gate self-test
+        env:
+          QUALITY_GATE_TEST_REPORT: ${{ runner.temp }}/quality-gate-self-test.xml
+        run: devenv tasks run quality-gate:self-test
+      - name: Upload the self-test report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: quality-gate-self-test-junit
+          path: ${{ runner.temp }}/quality-gate-self-test.xml
+          if-no-files-found: ignore
+      - name: Run Quality Gate package tests
+        run: |
+          devenv tasks run complexipy:test
+
+  darwin-build:
+    name: Quality Gate / aarch64-darwin build
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install Nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - name: Use Quality Gate binary caches
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: prefeitura-rio
+          extraPullNames: devenv
+          skipPush: true
+      - name: Build Darwin apps
+        run: |
+          nix build \
+            .#packages.aarch64-darwin.quality-gate \
+            .#packages.aarch64-darwin.quality-gate-detect \
+            .#packages.aarch64-darwin.quality-gate-python \
+            .#packages.aarch64-darwin.quality-gate-go \
+            .#packages.aarch64-darwin.quality-gate-typescript \
+            --no-link
+
+  publish-cache:
+    name: Publish Quality Gate binary cache
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [tests, darwin-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # A cache outage must not stop a release: a miss only costs a local build.
+    continue-on-error: true
+    environment: cachix-publish
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - name: Publish Quality Gate builds
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: prefeitura-rio
+          extraPullNames: devenv
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Build and publish Linux apps
+        run: |
+          nix build \
+            .#quality-gate \
+            .#quality-gate-detect \
+            .#quality-gate-python \
+            .#quality-gate-go \
+            .#quality-gate-typescript \
+            --no-link
+
+  publish-darwin-cache:
+    name: Publish Quality Gate Darwin binary cache
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [tests, darwin-build]
+    runs-on: macos-15
+    timeout-minutes: 60
+    # A cache outage must not stop a release: a miss only costs a local build.
+    continue-on-error: true
+    environment: cachix-publish
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - name: Publish Quality Gate Darwin builds
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: prefeitura-rio
+          extraPullNames: devenv
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Build and publish Darwin apps
+        run: |
+          nix build \
+            .#packages.aarch64-darwin.quality-gate \
+            .#packages.aarch64-darwin.quality-gate-detect \
+            .#packages.aarch64-darwin.quality-gate-python \
+            .#packages.aarch64-darwin.quality-gate-go \
+            .#packages.aarch64-darwin.quality-gate-typescript \
+            --no-link

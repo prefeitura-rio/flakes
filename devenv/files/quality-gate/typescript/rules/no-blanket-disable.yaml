@@ -1,0 +1,12 @@
+id: no-blanket-disable
+language: TypeScript
+severity: error
+message: >
+  A disable directive must name the rules it silences. A bare
+  eslint-disable / oxlint-disable switches every rule off for the file or the
+  line, which removes the central Quality Gate policy. Name the rule and
+  explain why, for example: // oxlint-disable-next-line eqeqeq -- legacy API
+  compares against null.
+rule:
+  kind: comment
+  regex: '^(//|/\*)\s*(eslint|oxlint)-disable(-next-line|-line)?(\s+--\s.*?)?\s*(\*/)?\s*$'
