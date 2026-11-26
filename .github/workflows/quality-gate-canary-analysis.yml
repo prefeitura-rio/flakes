@@ -217,7 +217,7 @@ jobs:
             done < "$pipelines"
 
             jq --arg candidate_ref "$candidate_ref" --arg candidate_sha "$candidate_sha" \
-              '{candidate_ref: $candidate_ref, candidate_sha: $candidate_sha, projects: ., healthy: ([.[].analysis.healthy] | all)}' \
+              '{analysis_version: 2, candidate_ref: $candidate_ref, candidate_sha: $candidate_sha, projects: ., healthy: ([.[].analysis.healthy] | all)}' \
               "$results" | tee canary-analysis.json
 
             {
@@ -225,7 +225,7 @@ jobs:
               echo
               echo "- Candidate: \`$candidate_ref\`"
               echo "- SHA: \`$candidate_sha\`"
-              jq -r '.projects[] | "- \(.project): healthy=\(.analysis.healthy), engine_failures=\(.analysis.engine_failures | length), unexpected_findings=\(.analysis.unexpected_findings | length)"' canary-analysis.json
+              jq -r '.projects[] | "- \(.project): healthy=\(.analysis.healthy), engine_failures=\(.analysis.engine_failures | length), unexpected_findings=\(.analysis.unexpected_findings | length), cache_diagnostics=\(.analysis.cache_diagnostics | length)"' canary-analysis.json
             } >> "$GITHUB_STEP_SUMMARY"
 
           fi

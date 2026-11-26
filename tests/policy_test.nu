@@ -62,6 +62,33 @@ def test-pyright-ignores-the-virtualenv-even-with-exclusions [] {
     finish $root $outcome
 }
 
+@test
+def test-pyright-ignores-cache-but-still-checks-project-code [] {
+    let root = fixture-repo python-clean
+    let outcome = try {
+        for file in [
+            '.cache/quality-gate/uv/archive-v0/dependency/bad.py'
+            'src/.cache/quality-gate/uv/archive-v0/dependency/bad.py'
+            '.cache/another-tool/bad.py'
+        ] {
+            write-file $root $file "value: int = 'text'\n"
+        }
+        let clean = run-app $root quality-gate-python category typecheck
+        assert equal $clean.exit_code 0 $'cache errors must be ignored:\n($clean.stdout)\n($clean.stderr)'
+        assert equal (failed-checks $clean | length) 0
+        write-file $root app.py "value: int = 'text'\n"
+        let broken = run-app $root quality-gate-python category typecheck
+        assert ($broken.exit_code != 0) 'the cache exclusion must not hide real source errors'
+        let failure = failed-checks $broken | first
+        assert equal $failure.check 'typecheck:python:basedpyright'
+        assert equal $failure.category finding
+        assert ($failure.message | str contains 'app.py') $failure.message
+        assert (not ($failure.message | str contains '.cache/')) $failure.message
+        null
+    } catch {|error| $error.msg }
+    finish $root $outcome
+}
+
 # ---------------------------------------------------------------------------
 # Exclusion guard rails.
 # ---------------------------------------------------------------------------

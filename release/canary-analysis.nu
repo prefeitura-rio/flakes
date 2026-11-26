@@ -48,7 +48,10 @@ def classify-testcase [job: record, testcase: record]: nothing -> record {
         } else {
             'engine'
         }
-        { name: $name, qualified: $raw_name, job: $job.name, status: $job.status, category: $category, reason: (summarize-reason $message) }
+        # Inspect the full diagnostic before truncating the proof. The cache can
+        # otherwise satisfy an expected finding while hiding a broken check.
+        let cache_diagnostic = $message | str contains '.cache/quality-gate/'
+        { name: $name, qualified: $raw_name, job: $job.name, status: $job.status, category: $category, reason: (summarize-reason $message), cache_diagnostic: $cache_diagnostic }
     }
 }
 
@@ -94,6 +97,7 @@ export def evaluate [expectation: record, jobs: list<record>]: nothing -> record
     }
     let unexpected_skipped = $classified | where status == skipped and job not-in $expected_skipped
     let inconclusive = $classified | where category == inconclusive
+    let cache_diagnostics = $classified | where {|row| $row.cache_diagnostic? | default false }
     let healthy = (
         ($missing_jobs | is-empty)
         and ($missing_checks | is-empty)
@@ -102,6 +106,7 @@ export def evaluate [expectation: record, jobs: list<record>]: nothing -> record
         and ($unexpected_findings | is-empty)
         and ($unexpected_skipped | is-empty)
         and ($inconclusive | is-empty)
+        and ($cache_diagnostics | is-empty)
     )
     {
         healthy: $healthy
@@ -112,6 +117,7 @@ export def evaluate [expectation: record, jobs: list<record>]: nothing -> record
         unexpected_findings: $unexpected_findings
         unexpected_skipped: $unexpected_skipped
         inconclusive: $inconclusive
+        cache_diagnostics: $cache_diagnostics
         jobs: $classified
     }
 }

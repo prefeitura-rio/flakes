@@ -11,7 +11,9 @@
 #   - were triggered by the schedule, a workflow_run or a manual dispatch,
 #   - finished successfully (the analysis exits non-zero when it is unhealthy),
 #
-# are accepted, and the JSON must be healthy and name the same commit.
+# are accepted, and the JSON must be healthy, name the same commit and use the
+# current analysis version. Version 2 detects Quality Gate cache diagnostics;
+# earlier artifacts cannot prove the candidate passed that check.
 #
 # --not-before TIMESTAMP rejects analyses older than that instant. Promotion uses
 # it to require an analysis made after the bake time ended.
@@ -88,7 +90,7 @@ for run_id in $run_ids; do
     if ! unzip -p "$archive" canary-analysis.json > "$document" 2>/dev/null; then
       continue
     fi
-    if jq -e --arg sha "$sha" '.healthy == true and .candidate_sha == $sha' "$document" >/dev/null 2>&1; then
+    if jq -e --arg sha "$sha" '.analysis_version == 2 and .healthy == true and .candidate_sha == $sha' "$document" >/dev/null 2>&1; then
       echo "Canary analysis of ${sha} is healthy (run ${run_id}, ${created_at})." >&2
       if [[ -n "$output" ]]; then
         cp "$document" "$output"

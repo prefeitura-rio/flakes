@@ -18,6 +18,7 @@ const PYRIGHT_DEFAULT_EXCLUDES = [
     '**/node_modules'
     '**/__pycache__'
     '**/.venv'
+    '**/.cache'
     '**/dist'
     '**/build'
 ]

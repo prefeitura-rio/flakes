@@ -4,6 +4,7 @@ use support/isolation.nu
 use support/qg.nu [write-executable]
 
 const VERIFY = path self | path dirname | path join .. release scripts verify-canary-health.sh
+const WORKFLOW = path self | path dirname | path join .. .github workflows quality-gate-canary-analysis.yml
 
 const REPOSITORY = 'prefeitura-rio/flakes'
 const SHA = '0123456789abcdef0123456789abcdef01234567'
@@ -55,7 +56,45 @@ def --wrapped verify [root: path, ...arguments: string]: nothing -> record {
 }
 
 def healthy-analysis []: nothing -> record {
-    {candidate_sha: $SHA, healthy: true, projects: []}
+    {analysis_version: 2, candidate_sha: $SHA, healthy: true, projects: []}
+}
+
+@test
+def test_the_canary_workflow_emits_the_current_proof_version [] {
+    let workflow = open --raw $WORKFLOW | from yaml
+    let step = $workflow.jobs.analyze.steps | where {|item| ($item.name? | default '') == 'Trigger and analyze sandbox pipelines' } | first
+    let start = 'jq --arg candidate_ref "$candidate_ref" --arg candidate_sha "$candidate_sha"'
+    let end = '| tee canary-analysis.json'
+    assert ($step.run | str contains $start)
+    assert ($step.run | str contains $end)
+    let middle = $step.run | split row $start | last | split row $end | first
+    let script = ["set -euo pipefail" $'($start)($middle)'] | str join (char nl)
+    let root = run-fixture [(run-record)]
+    let results = $root | path join results.json
+    [{analysis: {healthy: true}}] | to json | save --force $results
+    let run = with-env {candidate_ref: 'quality-gate-next', candidate_sha: $SHA, results: $results} {
+        ^bash -c $script | complete
+    }
+    assert equal $run.exit_code 0 $run.stderr
+    let proof = $run.stdout | from json
+    assert equal $proof.analysis_version 2
+    assert equal $proof.healthy true
+    add-artifact $root 100 7 $proof
+    assert equal (verify $root | get exit_code) 0 'the verifier must accept the workflow proof'
+    rm --recursive --force $root
+}
+
+@test
+def test_legacy_and_wrong_analysis_versions_cannot_prove_health [] {
+    let root = run-fixture [(run-record)]
+    for version in [null 1 3 '2'] {
+        add-artifact $root 100 7 (healthy-analysis | upsert analysis_version $version)
+        let result = verify $root
+        assert equal $result.exit_code 1 $'analysis version ($version | to nuon) must be rejected'
+    }
+    add-artifact $root 100 7 (healthy-analysis | reject analysis_version)
+    assert equal (verify $root | get exit_code) 1 'old artifacts have no version'
+    rm --recursive --force $root
 }
 
 @test
