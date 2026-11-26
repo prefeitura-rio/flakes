@@ -5,8 +5,8 @@ on:
     workflows: ["Quality Gate Release"]
     types: [completed]
     branches: [master]
-  schedule:
-    - cron: "37 4 * * *"
+  # Daily schedule temporarily paused until the GitLab sandboxes are integrated.
+  # Restore `schedule: [{cron: "37 4 * * *"}]` to recheck after the bake.
   workflow_dispatch:
     inputs:
       candidate_ref:
