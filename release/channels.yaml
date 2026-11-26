@@ -1,5 +1,5 @@
 version: 1
-latest: ""
+latest: "quality-gate-v1.0.0"
 previous: ""
 bake_days: 3
 issue_assignee: vitorco7
