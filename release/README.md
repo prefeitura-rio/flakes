@@ -92,11 +92,13 @@ writes for each Quality Gate job. Every check is classified as `finding` or
 
 - a failed check is healthy only when it is an expected finding of that sandbox;
 - an expected finding that does not happen makes the candidate unhealthy;
-- any `engine` result, a missing report or a job that did not finish does too.
+- any `engine` result, a missing report, a job that did not finish, or a
+  diagnostic mentioning `.cache/quality-gate/` does too.
 
 The analysis retains the first 1024 characters of each diagnostic reason and
 marks longer ones as truncated. Classification uses the original message; the
-complete diagnostic remains in the sandbox job's GitLab artifact.
+complete diagnostic remains in the sandbox job's GitLab artifact. Cache
+diagnostics are checked before truncation.
 
 The candidate must be the target of an immutable `quality-gate-v*` tag of this
 repository. A healthy candidate whose bake time is over produces the automatic
@@ -106,10 +108,12 @@ promotion PR.
 accepts the artifact `quality-gate-canary-<sha>` only from a successful run of the
 analysis workflow on `master` of this repository, started by the schedule, a
 `workflow_run` or a manual dispatch, and only when the JSON inside is healthy and
-names the same commit. Any workflow of the repository can upload an artifact with
-any name, so the name alone proves nothing. Both the validation of a promotion PR
-and the `promote` job require such a proof made **after the end of the bake**:
-the sandboxes are checked again at the end, not only on the first day.
+names the same commit. It also requires analysis version 2, which includes the
+cache diagnostic check; older artifacts cannot satisfy promotion. Any workflow
+of the repository can upload an artifact with any name, so the name alone proves
+nothing. Both the validation of a promotion PR and the `promote` job require such
+a proof made **after the end of the bake**: the sandboxes are checked again at
+the end, not only on the first day.
 
 ### What the sandboxes must cover
 

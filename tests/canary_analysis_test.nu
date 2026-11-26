@@ -299,3 +299,22 @@ def test_short_diagnostics_are_preserved [] {
     let job = {name: 'quality-gate:lint', status: failed, junit: (junit '. / lint:python:ruff' finding)}
     assert equal (classify-job $job | first | get reason) 'Category: finding'
 }
+
+@test
+def test_cache_diagnostics_are_unhealthy_even_beyond_the_reason_limit [] {
+    let prefix = 0..1 | each { 'x' | fill --width 1024 --character 'x' } | str join
+    let expectation = {required_jobs: ['quality-gate:typecheck'], expected_findings: ['typecheck:python:basedpyright'], expected_skipped: []}
+    for path in ['/builds/project/.cache/quality-gate/uv/archive-v0/bad.py' '.cache/quality-gate/uv/bad.py'] {
+        let message = $'Category: finding ($prefix) Diagnostics: ($path):1: error'
+        let report = $'<testsuites><testsuite><testcase name=". / typecheck:python:basedpyright"><failure message="($message)">diagnostics</failure></testcase></testsuite></testsuites>'
+        let result = evaluate $expectation [{name: 'quality-gate:typecheck', status: failed, junit: $report}]
+        assert equal $result.healthy false
+        assert equal ($result.cache_diagnostics | length) 1
+        assert equal ($result.jobs | first | get category) finding
+        assert (not ($result.jobs | first | get reason | str contains '.cache/quality-gate/')) 'the guard must inspect the full message, not its summary'
+    }
+    let clean = '<testsuites><testsuite><testcase name=". / typecheck:python:basedpyright"><failure message="Category: finding Diagnostics: src/app.py:1: error">diagnostics</failure></testcase></testsuite></testsuites>'
+    let result = evaluate $expectation [{name: 'quality-gate:typecheck', status: failed, junit: $clean}]
+    assert equal $result.healthy true
+    assert equal $result.cache_diagnostics []
+}
