@@ -94,6 +94,10 @@ writes for each Quality Gate job. Every check is classified as `finding` or
 - an expected finding that does not happen makes the candidate unhealthy;
 - any `engine` result, a missing report or a job that did not finish does too.
 
+The analysis retains the first 1024 characters of each diagnostic reason and
+marks longer ones as truncated. Classification uses the original message; the
+complete diagnostic remains in the sandbox job's GitLab artifact.
+
 The candidate must be the target of an immutable `quality-gate-v*` tag of this
 repository. A healthy candidate whose bake time is over produces the automatic
 promotion PR.
