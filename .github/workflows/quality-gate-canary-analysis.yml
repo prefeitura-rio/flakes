@@ -202,11 +202,16 @@ jobs:
                 mv "$jobs_file.tmp" "$jobs_file"
               done < <(jq -r '.[] | [.id, .name, .status] | @tsv' <<<"$jobs")
 
-              analysis="$(nix --extra-experimental-features 'nix-command flakes' run --inputs-from . nixpkgs#nushell -- \
-                release/canary-analysis.nu evaluate release/canary-expectations.yaml "$project_id" "$jobs_file")"
+              analysis_file="$tmp/analysis-$project_id.json"
+              nix --extra-experimental-features 'nix-command flakes' run --inputs-from . nixpkgs#nushell -- \
+                release/canary-analysis.nu evaluate release/canary-expectations.yaml "$project_id" "$jobs_file" > "$analysis_file"
               jq --arg id "$project_id" --arg name "$project_name" \
-                --argjson analysis "$analysis" \
-                '. += [{project_id: ($id | tonumber), project: $name, analysis: $analysis}]' \
+                --slurpfile analysis "$analysis_file" \
+                'if ($analysis | length) != 1 or ($analysis[0] | type) != "object" then
+                  error("Expected exactly one canary analysis object")
+                else
+                  . += [{project_id: ($id | tonumber), project: $name, analysis: $analysis[0]}]
+                end' \
                 "$results" > "$results.tmp"
               mv "$results.tmp" "$results"
             done < "$pipelines"

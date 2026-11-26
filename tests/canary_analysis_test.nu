@@ -277,3 +277,25 @@ def test_the_category_is_read_only_from_the_start_of_the_message [] {
         assert equal ($result.engine_failures | length) 1 $case.name
     }
 }
+
+@test
+def test_large_diagnostics_are_bounded_without_changing_classification [] {
+    let body = (0..2047 | each { 'x' | fill --width 1024 --character 'x' } | str join)
+    let expectation = {required_jobs: ['quality-gate:lint'], expected_findings: ['lint:python:ruff'], expected_skipped: []}
+    for category in [finding engine] {
+        let message = $'Category: ($category) ($body)'
+        let report = $'<testsuites><testsuite><testcase name=". / lint:python:ruff"><failure message="($message)">diagnostics</failure></testcase></testsuite></testsuites>'
+        let result = evaluate $expectation [{name: 'quality-gate:lint', status: failed, junit: $report}]
+        let classified = $result.jobs | first
+        assert equal $classified.category $category
+        assert equal $result.healthy ($category == 'finding')
+        assert (($classified.reason | str length) < 1100)
+        assert ($classified.reason | str ends-with '[truncated; see GitLab job artifact]')
+    }
+}
+
+@test
+def test_short_diagnostics_are_preserved [] {
+    let job = {name: 'quality-gate:lint', status: failed, junit: (junit '. / lint:python:ruff' finding)}
+    assert equal (classify-job $job | first | get reason) 'Category: finding'
+}

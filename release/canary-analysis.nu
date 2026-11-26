@@ -23,6 +23,16 @@ def check-name [name: string]: nothing -> string {
     }
 }
 
+# Keep the classification proof compact even when a tool emits megabytes of
+# diagnostics. The complete message remains available in the GitLab artifact.
+def summarize-reason [message: string]: nothing -> string {
+    if ($message | str length) > 1024 {
+        $"($message | str substring 0..1023)\n[truncated; see GitLab job artifact]"
+    } else {
+        $message
+    }
+}
+
 def classify-testcase [job: record, testcase: record]: nothing -> record {
     let raw_name = $testcase.attributes.name? | default $job.name
     let name = check-name $raw_name
@@ -38,7 +48,7 @@ def classify-testcase [job: record, testcase: record]: nothing -> record {
         } else {
             'engine'
         }
-        { name: $name, qualified: $raw_name, job: $job.name, status: $job.status, category: $category, reason: $message }
+        { name: $name, qualified: $raw_name, job: $job.name, status: $job.status, category: $category, reason: (summarize-reason $message) }
     }
 }
 
