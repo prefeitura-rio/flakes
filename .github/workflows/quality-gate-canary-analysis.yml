@@ -142,14 +142,7 @@ jobs:
             pipelines="$tmp/pipelines.tsv"
 
             while IFS='|' read -r project_id project_name; do
-              response="$(curl --fail-with-body --silent --show-error \
-                --request POST \
-                --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-                --form ref=main \
-                --form "variables[QUALITY_GATE_REF]=$candidate_sha" \
-                --form "variables[QUALITY_GATE_CANARY]=true" \
-                "$GITLAB_API/projects/$project_id/pipeline")"
-              pipeline_id="$(jq -r .id <<<"$response")"
+              pipeline_id="$(bash release/scripts/trigger-gitlab-canary.sh "$project_id" "$candidate_sha")"
               printf '%s|%s|%s\n' "$project_id" "$project_name" "$pipeline_id" >> "$pipelines"
             done < "$tmp/projects.tsv"
 
