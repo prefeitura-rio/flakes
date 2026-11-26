@@ -93,7 +93,7 @@ How a package gets from a file to `pkgs.prefrio`:
 
 The package itself is built in `pkgs/prefrio/default.nix`:
 
-- `writeShellApplication` makes the `prefrio` launcher, which runs the Nushell script with a Nushell that has the skim plugin (`nushell.withPlugins`).
+- `writeShellApplication` makes the `prefrio` launcher, which runs the Nushell script.
 - `buildEnv` joins the launcher with the tools it drives: gcloud, kubectl, OpenTofu, SOPS and Terragrunt.
 
 ## Installation
