@@ -330,7 +330,21 @@ expectations and the devenv tasks use, so a name is part of the contract.
 
 ### Reports
 
-Every category prints a Markdown table to the terminal with one row per project, language and check, and the output of a failing check is printed as it runs. These variables write reports to files. The Markdown and JUnit reports also include each failure's output and the command that fixes it:
+Every category prints a Markdown table to the terminal with one row per project, language and check, and the output of a failing check is printed as it runs. The Markdown and JUnit reports also include each failure's output and an actionable next step:
+
+- Markdown and JUnit remove terminal escape codes while preserving Unicode.
+- Successful dependency-install output stays in the job log, not the typecheck
+  diagnostic. Failed installations retain their output in the reports.
+- For recognized lint diagnostic formats, the Markdown summary counts parsed
+  rules and severities. Counts can be incomplete; they do not affect the verdict.
+- When a JUnit file is configured, a long diagnostic in the Markdown summary
+  is limited to 32,768 UTF-8 bytes and points to the complete JUnit and job log.
+  Without a JUnit destination it is not truncated. JUnit keeps the complete
+  diagnostic after known warning suppression so the canary sees the full proof.
+- The reports omit only known redundant gocritic configuration warnings; the
+  complete unfiltered output remains in the job log.
+
+These variables write reports to files:
 
 | Variable                        | Output                                            |
 | ------------------------------- | ------------------------------------------------- |
