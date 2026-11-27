@@ -255,6 +255,19 @@ def record-output [text: string] {
     ($previous + (strip-terminal-codes $text) + (char nl)) | save --force $output_file
 }
 
+def finding-description [name: string]: nothing -> string {
+    match $name {
+        'go build' => 'Go compilation reported errors. Review the compiler diagnostics below.'
+        'go vet' => 'Go vet reported issues. Review the diagnostics below.'
+        'golangci-lint' => 'Go lint reported issues. Review the diagnostics below.'
+        'go test' => 'Go tests did not pass. Review the build and test diagnostics below.'
+        'basedpyright' => 'Python typecheck reported errors. Review the diagnostics below.'
+        'tsc' | 'vue-tsc' => 'TypeScript typecheck reported errors. Review the diagnostics below.'
+        'uv pytest' | 'npm test' | 'pnpm test' => 'The project test command did not pass. Review the diagnostics below.'
+        _ => 'The check reported failures. Review the diagnostics below.'
+    }
+}
+
 # A check reports `finding` only when the tool exits with one of `finding-codes`
 # (the exit codes that mean "the code violates the policy"). Every other
 # non-zero exit means the tool could not run and is reported as `engine`.
@@ -291,13 +304,20 @@ def run-check [
         } else {
             'engine'
         }
-        error make {
-            msg: $'($category): ($name) failed with exit code ($result.exit_code)'
+        let explanation = if $category == engine and $name in ['uv sync' 'npm ci' 'pnpm install'] {
+            'Dependency installation did not complete. Check the execution environment and diagnostics below.'
+        } else if $category == engine {
+            'The command could not complete. Check the execution environment and diagnostics below.'
+        } else {
+            finding-description $name
         }
+        error make {msg: $'($category): ($name): ($explanation) Exit code: ($result.exit_code).'}
     }
 }
 
 def format-check-failure [tool: string, result: record, message: string] {
+    record-output ($result.stdout | str trim)
+    record-output ($result.stderr | str trim)
     if $result.exit_code == 1 {
         error make {msg: $'finding: ($message)'}
     }
@@ -1362,7 +1382,8 @@ def run-language-ci [language: string] {
         }
     }
 
-    print-console-summary $'($normalized) hook checks' $scope $results
+    let cgo_notice = go-cgo-notice $scope $results
+    print-console-summary $'($normalized) hook checks' $scope $results $cgo_notice
     let failures = $results | where status == failure
     if not ($failures | is-empty) {
         let failure_count = ($failures | length)
@@ -1399,7 +1420,9 @@ def fix-language [language: string] {
         }
         # Each project is fixed with the scope it is checked with, so the file
         # lists, exclusions and nested projects are those of that project.
-        with-env {QUALITY_GATE_PROJECT_DIR: $directory, QUALITY_GATE_ROOT: $root} {
+        let environment = {QUALITY_GATE_PROJECT_DIR: $directory, QUALITY_GATE_ROOT: $root}
+        let environment = if $normalized == go { $environment | insert CGO_ENABLED '0' } else { $environment }
+        with-env $environment {
             cd $directory
             match $normalized {
                 python => {
@@ -1442,9 +1465,7 @@ def fix-language [language: string] {
 
 def report-language-checks [title: string, language: string, commands: list<list<string>>] {
     let run = run-language-checks $language $commands
-    print-console-summary $title $run.scope $run.results
-    write-summary $title $run.scope $run.results
-    write-junit $title $run.scope $run.results
+    write-reports $title $run.scope $run.results
     let failures = $run.results | where status == failure
 
     if ($run.results | is-empty) {
@@ -1537,7 +1558,11 @@ Diagnostics:
         status: $result.status
         category: $result.category
         error: $error
-        fix: (check-fix $directory $verb $language $check)
+        fix: (if $result.category == engine {
+            'Check the execution environment and the diagnostic above, then rerun this check.'
+        } else {
+            check-fix $directory $verb $language $check
+        })
     }
 }
 
@@ -1559,7 +1584,84 @@ def result-project [result: record, scope: string]: nothing -> string {
     if ($relative | is-empty) or $relative == '.' { '.' } else { $relative }
 }
 
-def print-console-summary [title: string, scope: string, results: list<record>] {
+# `go list` loads metadata without compiling. Comparing both settings also
+# finds packages that disappear entirely when cgo is disabled. Only project
+# files are reported; dependency files and paths explicitly excluded by the
+# consumer are outside this list.
+def go-list-metadata [directory: path, cgo: string]: nothing -> record {
+    let result = try {
+        with-env {CGO_ENABLED: $cgo} {
+            cd $directory
+            capture go [list -e '-json=Dir,GoFiles,CgoFiles,TestGoFiles,XTestGoFiles,Error,Incomplete' ./...]
+        }
+    } catch { return {ok: false, files: []} }
+    if $result.exit_code != 0 { return {ok: false, files: []} }
+    let text = $result.stdout | str trim
+    # With cgo disabled all packages may legitimately disappear. An empty
+    # cgo-enabled result cannot establish whether the inspection succeeded.
+    if ($text | is-empty) { return {ok: ($cgo == '0'), files: []} }
+    let json = $text | str replace --all --regex '(?m)^}\r?\n\{' "},\n{"
+    let packages = try { $'[($json)]' | from json } catch { return {ok: false, files: []} }
+    let files = try {
+        $packages | each {|pkg|
+            let directory = $pkg.Dir? | default ''
+            if ($directory | is-empty) {
+                []
+            } else {
+                let names = ($pkg.GoFiles? | default []) ++ ($pkg.CgoFiles? | default []) ++ ($pkg.TestGoFiles? | default []) ++ ($pkg.XTestGoFiles? | default [])
+                $names | each {|name| $directory | path join $name | path expand }
+            }
+        } | flatten | uniq
+    } catch { return {ok: false, files: []} }
+    let incomplete = $packages | any {|pkg| ($pkg.Dir? | default '' | is-empty) or ($pkg.Error? | default null) != null or ($pkg.Incomplete? | default false) }
+    {ok: (not $incomplete), files: $files}
+}
+
+def go-cgo-notice [scope: path, results: list<record>]: nothing -> string {
+    let projects = $results | where language == go
+        | where {|row| $row.check in ['lint:go:golangci' 'lint:go:vet' 'typecheck:go:build' 'test:go:test'] }
+        | get project | uniq
+    if ($projects | is-empty) { return '' }
+    let checks = $projects | each {|directory|
+        let project = $directory | path relative-to $scope
+        try {
+            let enabled = go-list-metadata $directory '1'
+            let disabled = go-list-metadata $directory '0'
+            let project_files = with-env {QUALITY_GATE_PROJECT_DIR: $directory, QUALITY_GATE_ROOT: $scope} {
+                quality-gate-files [go] --language go | each {|file| $directory | path join $file | path expand }
+            }
+            let omitted = $enabled.files | where {|file|
+                $file not-in $disabled.files and $file in $project_files
+            } | each {|file| $file | path relative-to $scope }
+            {project: $project, ok: ($enabled.ok and $disabled.ok), files: $omitted}
+        } catch { {project: $project, ok: false, files: []} }
+    }
+    let files = $checks | get files | flatten | uniq | sort
+    let unavailable = $checks | where ok == false | get project | each {|p| if ($p | is-empty) { '.' } else { $p } }
+    let lines = [
+        'Go checks use CGO_ENABLED=0. The following project files selected only with cgo enabled are not compiled, vetted or tested (format and structural checks may still inspect them):'
+        (if ($files | is-empty) { 'None detected.' } else { $files | each {|file| $'- ($file)' } | str join (char nl) })
+        (if ($unavailable | is-empty) { '' } else { $'WARNING: cgo file detection was incomplete for: ($unavailable | str join ", "). Review these projects manually.' })
+    ]
+    $lines | where {|line| ($line | is-not-empty) } | str join (char nl)
+}
+
+def write-reports [title: string, scope: string, results: list<record>] {
+    let cgo_notice = go-cgo-notice $scope $results
+    print-console-summary $title $scope $results $cgo_notice
+    write-summary $title $scope $results $cgo_notice
+    write-junit $title $scope $results $cgo_notice
+}
+
+def cgo-markdown-notice [notice: string]: nothing -> string {
+    let text = strip-terminal-codes $notice
+    let runs = $text | parse --regex '(?<ticks>`{3,})' | get ticks
+    let width = if ($runs | is-empty) { 3 } else { 1 + ($runs | each {|run| $run | str length } | math max) }
+    let fence = '`' | fill --width $width --character '`'
+    [$'($fence)text' $text $fence] | str join (char nl)
+}
+
+def print-console-summary [title: string, scope: string, results: list<record>, cgo_notice: string = ''] {
     let failures = $results | where status == failure
     let revision = $env.QUALITY_GATE_REVISION? | default 'unknown'
     print ''
@@ -1569,6 +1671,7 @@ def print-console-summary [title: string, scope: string, results: list<record>] 
     print $'Mode: (if (report-only) { "report-only" } else { "blocking" })'
     let exclusions = quality-gate-exclude-patterns
     print $'Exclusions: (if ($exclusions | is-empty) { "none" } else { $exclusions | str join ", " })'
+    if ($cgo_notice | is-not-empty) { print $cgo_notice }
     print ''
     print '| Project | Language | Check | Category | Outcome |'
     print '| --- | --- | --- | --- | --- |'
@@ -1594,7 +1697,7 @@ def print-console-summary [title: string, scope: string, results: list<record>] 
     print ''
 }
 
-def write-summary [title: string, scope: string, results: list<record>] {
+def write-summary [title: string, scope: string, results: list<record>, cgo_notice: string = ''] {
     let summary_file = ($env.QUALITY_GATE_SUMMARY_FILE? | default null)
     if $summary_file == null { return }
 
@@ -1634,6 +1737,7 @@ How to fix it:
         $'Revision: `($revision)`'
         $'Mode: `($mode)`'
         $'Exclusions: (if ((quality-gate-exclude-patterns) | is-empty) { "none" } else { (quality-gate-exclude-patterns | str join ", ") })'
+        (if ($cgo_notice | is-empty) { '' } else { ['' '## Go cgo coverage' '' (cgo-markdown-notice $cgo_notice)] | str join (char nl) })
         (if (report-only) { '> REPORT-ONLY: failures are reported but do not block this execution.' } else { '' })
         ''
         '| Project | Language | Check | Category | Outcome |'
@@ -1648,7 +1752,7 @@ How to fix it:
     $content | save --force $summary_file
 }
 
-def write-junit [title: string, scope: string, results: list<record>] {
+def write-junit [title: string, scope: string, results: list<record>, cgo_notice: string = ''] {
     let junit_file = ($env.QUALITY_GATE_JUNIT_FILE? | default null)
     if $junit_file == null { return }
 
@@ -1679,6 +1783,7 @@ How to fix:
         $'<testsuites name="(xml-escape $title)" tests="($results | length)" failures="($failures)">'
         $'  <testsuite name="(xml-escape $title)" tests="($results | length)" failures="($failures)">'
         ($testcases | str join (char nl))
+        (if ($cgo_notice | is-empty) { '' } else { $'    <system-out><![CDATA[(xml-cdata $cgo_notice)]]></system-out>' })
         '  </testsuite>'
         '</testsuites>'
         ''
@@ -1719,9 +1824,7 @@ def run-category [category: string] {
     }
     let run = run-category-checks $category
     let title = ($category | str capitalize)
-    print-console-summary $title $run.scope $run.results
-    write-summary $title $run.scope $run.results
-    write-junit $title $run.scope $run.results
+    write-reports $title $run.scope $run.results
     let failures = $run.results | where status == failure
     if ($run.results | is-empty) {
         log warning $'No ($category) checks apply to the discovered projects.'
@@ -1769,9 +1872,7 @@ def detect [] {
 
 def test [] {
     let run = run-category-checks test
-    print-console-summary 'Tests' $run.scope $run.results
-    write-summary 'Tests' $run.scope $run.results
-    write-junit 'Tests' $run.scope $run.results
+    write-reports 'Tests' $run.scope $run.results
     let failures = $run.results | where status == failure
     if ($run.results | is-empty) {
         error make {msg: 'No test runner was found for the discovered projects.'}
@@ -1794,9 +1895,7 @@ def ci [] {
         $results = ($results | append $run.results)
         $directories = (($directories | append $run.directories) | uniq)
     }
-    print-console-summary 'All static checks' $scope $results
-    write-summary 'All static checks' $scope $results
-    write-junit 'All static checks' $scope $results
+    write-reports 'All static checks' $scope $results
     let failures = $results | where status == failure
     if not ($failures | is-empty) {
         let failure_count = ($failures | length)
@@ -1810,7 +1909,13 @@ def ci [] {
 
 def run-command [verb: string, language: string, check: string] {
     cd (project)
+    let environment = if $language == go { {CGO_ENABLED: '0'} } else { {} }
+    with-env $environment {
+        run-command-inner $verb $language $check
+    }
+}
 
+def run-command-inner [verb: string, language: string, check: string] {
     match [$verb $language $check] {
         [format python ruff] => (format-python)
         [lint python ruff] => (lint-python)
@@ -1896,6 +2001,16 @@ def main [verb?: string, language?: string, check?: string] {
     if $verb == null or $language == null or $check == null {
         print 'Usage: quality-gate.nu ci | detect | category <format|lint|strlint|typecheck> | test | <format|lint> <python|go|typescript> <check> | <format|lint|strlint|typecheck|tests> <py|python|go|ts|typescript>'
         exit 2
+    }
+    # Individual checks bypass the aggregate report, so show their cgo notice
+    # here instead. Formatting and structural checks still inspect those files.
+    let name = $'($verb):($language):($check)'
+    if $language == go and $name in ['lint:go:golangci' 'lint:go:vet' 'typecheck:go:build'] {
+        let scope = project
+        if (($scope | path join go.mod) | path exists) {
+            let notice = go-cgo-notice $scope [{project: $scope, language: go, check: $name}]
+            if ($notice | is-not-empty) { print $notice }
+        }
     }
     run-command $verb $language $check
 }

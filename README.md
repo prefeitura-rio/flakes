@@ -386,7 +386,14 @@ Each project picks its own runtime, so a monorepo can mix versions:
   downloads). `.python-version` or `requires-python` selects the interpreter;
   a version that is not bundled fails with an `engine` error. The Python app is
   about 380 MiB larger because it carries four interpreters.
-- **Go** never downloads a toolchain (`GOTOOLCHAIN=local`).
+- **Go** never downloads a toolchain (`GOTOOLCHAIN=local`). The Quality Gate
+  runs Go checks and tests with `CGO_ENABLED=0`, even if the caller sets it to
+  `1`. Cgo-dependent packages and files can be skipped by Go; console, Markdown
+  and JUnit reports list detected project files omitted for this reason, or
+  warn when detection is incomplete. Format and structural checks may still
+  inspect those files. A project that requires cgo may fail to build with it
+  disabled; `go test -race` also requires cgo. Such projects must run those
+  checks separately in their own environment.
 - TypeScript is checked with the project's own `node_modules/.bin/tsc` (or
   `vue-tsc`), so the project must declare `typescript` and commit its lockfile.
 
@@ -406,7 +413,8 @@ The classification follows the tool's exit code, not its text:
 
 Oxlint reports an invalid configuration with exit 1, so that one message is
 treated as `engine`. The canary analysis considers any `engine` result a failure
-of the Quality Gate itself.
+of the Quality Gate itself. See [the classification map](docs/quality-gate-error-classification.md)
+for current limits and follow-ups.
 
 Inline suppressions must identify the specific rule and include a justification.
 The central policies reject blanket suppressions, in every language:
