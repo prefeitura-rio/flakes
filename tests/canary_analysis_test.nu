@@ -301,6 +301,20 @@ def test_short_diagnostics_are_preserved [] {
 }
 
 @test
+def test_canary_reason_truncation_does_not_split_utf8 [] {
+    let header = 'Category: finding ação� '
+    let padding = 'x' | fill --width (1023 - ($header | str length)) --character 'x'
+    let message = $'($header)($padding)⚠ after-boundary'
+    let report = $'<testsuites><testsuite><testcase name=". / lint:python:ruff"><failure message="($message)">diagnostic</failure></testcase></testsuite></testsuites>'
+    let result = evaluate {required_jobs: [], expected_findings: ['lint:python:ruff'], expected_skipped: []} [{name: 'quality-gate:lint', status: failed, junit: $report}]
+    let reason = $result.jobs | first | get reason
+    assert equal $result.healthy true
+    assert equal (($reason | split row '�' | length) - 1) 1 'truncation must not introduce a replacement character'
+    assert (not ($reason | str contains '⚠'))
+    assert ($reason | str ends-with '[truncated; see GitLab job artifact]')
+}
+
+@test
 def test_cache_diagnostics_are_unhealthy_even_beyond_the_reason_limit [] {
     let prefix = 0..1 | each { 'x' | fill --width 1024 --character 'x' } | str join
     let expectation = {required_jobs: ['quality-gate:typecheck'], expected_findings: ['typecheck:python:basedpyright'], expected_skipped: []}

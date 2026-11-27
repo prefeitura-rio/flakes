@@ -95,10 +95,10 @@ writes for each Quality Gate job. Every check is classified as `finding` or
 - any `engine` result, a missing report, a job that did not finish, or a
   diagnostic mentioning `.cache/quality-gate/` does too.
 
-The analysis retains the first 1024 characters of each diagnostic reason and
-marks longer ones as truncated. Classification uses the original message; the
-complete diagnostic remains in the sandbox job's GitLab artifact. Cache
-diagnostics are checked before truncation.
+The analysis retains up to 1024 UTF-8 bytes of each diagnostic reason without
+splitting a character, and marks longer ones as truncated. Classification uses
+the original message; the complete diagnostic remains in the sandbox job's
+GitLab artifact. Cache diagnostics are checked before truncation.
 
 The candidate must be the target of an immutable `quality-gate-v*` tag of this
 repository. A healthy candidate whose bake time is over produces the automatic

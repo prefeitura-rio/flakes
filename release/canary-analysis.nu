@@ -27,7 +27,14 @@ def check-name [name: string]: nothing -> string {
 # diagnostics. The complete message remains available in the GitLab artifact.
 def summarize-reason [message: string]: nothing -> string {
     if ($message | str length) > 1024 {
-        $"($message | str substring 0..1023)\n[truncated; see GitLab job artifact]"
+        let bytes = $message | into binary
+        mut limit = 1024
+        mut prefix = $bytes | bytes at 0..<$limit
+        while (($prefix | decode utf-8 | into binary) != $prefix) {
+            $limit = $limit - 1
+            $prefix = $bytes | bytes at 0..<$limit
+        }
+        $"($prefix | decode utf-8)\n[truncated; see GitLab job artifact]"
     } else {
         $message
     }
