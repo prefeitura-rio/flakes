@@ -3,18 +3,26 @@
 The optional workflow `.github/workflows/quality-gate-kodus-review.yml` runs
 after `Quality Gate Tests` completes for a PR. It selects a current, open,
 same-repository PR targeting `master` only when files under `tests/` changed.
-It posts a **neutral**, non-required check to that exact PR head; failures are
-reported as unavailable, not as a clean review. Fork PRs and runs with missing
-or ambiguous PR associations are skipped. PRs updated or closed while the
-review runs do not receive a stale check. It does not review the entire suite,
-prove tests meaningful, run mutations, or replace human review.
+It writes the advisory findings to the GitHub Actions job summary and submits a
+comment-only PR review as `github-actions[bot]`. Findings on added diff lines
+are posted inline; others appear in the review body. It never approves or
+requests changes. Before posting, it checks the PR is open and both the head and
+base match the review; summaries can still become stale. Repeated runs for the
+same head and base do not post duplicate reviews. Failures are reported as unavailable,
+not as a clean review. Fork PRs and runs with missing or ambiguous PR
+associations are skipped. It does not review the entire suite, prove tests
+meaningful, run mutations, or replace human review.
 
 The privileged workflow runs from the protected default branch using
 `workflow_run`, rather than exposing credentials to `pull_request` workflows.
 It reads PR metadata using GitHub, fetches Git objects into an **empty working
 tree**, and never checks out, executes or downloads artifacts from PR code.
-The CLI sees the complete committed diff and a bounded selection of changed
-test blobs as context. An adversarial PR can still submit prompt-injection
+The job needs `pull-requests: write` to post comments. This is a job-level token
+permission available to actions in the job; actions are pinned by commit. The
+comment command receives the token explicitly, and the Kodus CLI does not.
+Repository approval settings must remain unchanged. The CLI sees the complete
+committed diff and a bounded selection of changed test blobs as context. An
+adversarial PR can still submit prompt-injection
 content; review output is untrusted. The Kodus backend may need access to the
 GitHub repository for context not present in the diff; this has not been
 validated with the GitLab-only Kodus connection.
@@ -25,12 +33,11 @@ validated with the GitLab-only Kodus connection.
    GitHub-hosted source context, and the selected model. Test auth failure,
    trial fallback, incomplete output, and data handling. Current upstream CLI
    documentation may describe features newer than the deployed server.
-   CLI 0.4.22 normally falls back to the trial endpoint on authentication 401.
-   After installation, `disable-trial-fallback.py` verifies the exact CLI file
-   SHA-256 and inserts a fail-closed guard. A local mock confirmed that an
-   invalid key does not submit a trial review with the guard enabled. Updating
-   the CLI requires reviewing and testing this guard; an unexpected file fails
-   the job. Validate the real server's authentication behavior before rollout.
+   CLI 0.4.22 can submit the diff to the self-hosted trial endpoint after an
+   authentication 401. The wrapper rejects results marked as trial, but the
+   submission has already occurred. Confirm the server's trial response and
+   data handling are acceptable before enabling the workflow; a missing trial
+   marker cannot be distinguished from a normal review by the wrapper.
 2. Review the Tailscale policy and ingress changes in the infrastructure
    repository. Apply them only after an approved plan, ensuring `tag:kodus-api`
    is attached only to the Kodus API ingress and `tag:kodus-github-ci` can reach
@@ -60,9 +67,11 @@ validated with the GitLab-only Kodus connection.
    updated. Installation happens before any Kodus or Tailscale secrets are
    supplied; the hosted runner itself remains an external dependency.
 7. Test a controlled PR, including a deliberately weak test and a clean test,
-   a stale head, a fork, a provider outage and a Tailscale failure. Check that
-   findings appear on the intended SHA, failures are neutral/unavailable, no PR
-   code runs, and the existing required checks and releases are unaffected.
+   a stale head or base, duplicate runs, a fork, a provider outage and a
+   Tailscale failure. Check inline placement, review-body fallbacks and the
+   intended SHA; failures must be visible, no PR code may run, and the existing
+   required checks and releases must remain unaffected. Confirm GitHub accepts
+   comment-only reviews without changing the repository approval setting.
    Then set `KODUS_SELF_TEST_REVIEW_ENABLED=true` as a repository variable.
 
 ## Disable and troubleshoot
@@ -70,5 +79,5 @@ validated with the GitLab-only Kodus connection.
 Set `KODUS_SELF_TEST_REVIEW_ENABLED` to `false` or remove it. Investigate the
 workflow run for selection, network, CLI and GitHub API errors without printing
 secrets, raw test output or private code. Revoke the dedicated credentials if
-compromise is suspected. No check is posted if selection cannot identify a
-current PR; GitHub may omit the association for forked or old workflow runs.
+compromise is suspected. No review runs if selection cannot identify a current
+PR; GitHub may omit the association for forked or old workflow runs.
