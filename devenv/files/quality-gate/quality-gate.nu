@@ -244,8 +244,10 @@ def capture [command: string, arguments: list<string>]: nothing -> record {
 def strip-terminal-codes [value: string]: nothing -> string {
     $value
     | str replace --all --regex '\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)' ''
-    | str replace --all --regex '\x1b\[[0-9;?]*[ -/]*[@-~]' ''
-    | str replace --all --regex '[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]' ''
+    | str replace --all --regex '\u{009d}[^\x07\u{009c}]*(?:\x07|\u{009c})' ''
+    | str replace --all --regex '\x1b\[[0-?]*[ -/]*[@-~]' ''
+    | str replace --all --regex '\u{009b}[0-?]*[ -/]*[@-~]' ''
+    | str replace --all --regex '[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u{0080}-\u{009f}]' ''
 }
 
 def record-output [text: string] {
@@ -255,16 +257,39 @@ def record-output [text: string] {
     ($previous + (strip-terminal-codes $text) + (char nl)) | save --force $output_file
 }
 
+# These warnings only repeat that a gocritic check is already enabled. Keep
+# every other warning, and leave the unfiltered output in the job log.
+def report-tool-output [name: string, text: string]: nothing -> string {
+    if $name != 'golangci-lint' { return $text }
+    let lines = $text | lines
+    let is_redundant = {|line|
+        (($line | str starts-with 'level=warning msg="[linters_context] gocritic: no need to enable check ')
+        and ($line | str ends-with "it's already enabled\"")
+        and (not ($line | str contains '.cache/quality-gate/')))
+    }
+    let removed = $lines | where {|line| do $is_redundant $line } | length
+    if $removed == 0 { return $text }
+    let kept = $lines | where {|line| not (do $is_redundant $line) }
+    ($kept | append $'[($removed) redundant gocritic configuration warnings omitted; see job log.]') | str join (char nl)
+}
+
 def finding-description [name: string]: nothing -> string {
     match $name {
         'go build' => 'Go compilation reported errors. Review the compiler diagnostics below.'
         'go vet' => 'Go vet reported issues. Review the diagnostics below.'
         'golangci-lint' => 'Go lint reported issues. Review the diagnostics below.'
         'go test' => 'Go tests did not pass. Review the build and test diagnostics below.'
+        'ruff check' => 'Python lint reported issues. Review the rule and location below.'
+        'complexipy' => 'Python complexity checks reported issues. Review the function and limit below.'
+        'oxlint' => 'TypeScript lint reported issues. Review the rule and location below.'
         'basedpyright' => 'Python typecheck reported errors. Review the diagnostics below.'
         'tsc' | 'vue-tsc' => 'TypeScript typecheck reported errors. Review the diagnostics below.'
         'uv pytest' | 'npm test' | 'pnpm test' => 'The project test command did not pass. Review the diagnostics below.'
-        _ => 'The check reported failures. Review the diagnostics below.'
+        _ => (if ($name | str ends-with 'ast-grep rules') {
+            'Structural checks reported issues. Review the rule guidance and location below.'
+        } else {
+            'The check reported failures. Review the diagnostics below.'
+        })
     }
 }
 
@@ -279,6 +304,7 @@ def run-check [
     --finding-codes: list<int>
     --any-failure-is-finding
     --engine-markers: list<string>
+    --record-on-failure
 ] {
     log info $'Running ($name)...'
     let result = capture $command $arguments
@@ -286,12 +312,12 @@ def run-check [
     if ($result.stdout | is-not-empty) {
         let output = ($result.stdout | str trim)
         print $output
-        record-output $output
+        if (not $record_on_failure) or $result.exit_code != 0 { record-output (report-tool-output $name $output) }
     }
     if ($result.stderr | is-not-empty) {
         let output = ($result.stderr | str trim)
         print -e $output
-        record-output $output
+        if (not $record_on_failure) or $result.exit_code != 0 { record-output (report-tool-output $name $output) }
     }
     if $result.exit_code != 0 {
         let codes = $finding_codes | default [1]
@@ -538,7 +564,7 @@ def sync-python []: nothing -> nothing {
         log info 'uv dependencies are up to date; skipping uv sync.'
     } else {
         with-env {UV_PROJECT_ENVIRONMENT: $venv} {
-            run-check 'uv sync' uv [sync --locked --all-groups] --finding-codes []
+            run-check 'uv sync' uv [sync --locked --all-groups] --finding-codes [] --record-on-failure
         }
         mkdir $venv
         $fingerprint | save --force $marker
@@ -942,9 +968,9 @@ def install-node-dependencies []: nothing -> nothing {
     cd $lock_directory
     try {
         if $manager == npm {
-            run-check 'npm ci' npm [ci] --finding-codes []
+            run-check 'npm ci' npm [ci] --finding-codes [] --record-on-failure
         } else {
-            run-check 'pnpm install' pnpm [install --frozen-lockfile] --finding-codes []
+            run-check 'pnpm install' pnpm [install --frozen-lockfile] --finding-codes [] --record-on-failure
         }
         mkdir ($lock_directory | path join node_modules)
         $fingerprint | save --force $marker
@@ -1495,16 +1521,16 @@ def check-fix [directory: path, verb: string, language: string, check: string]: 
         [lint python ruff] => 'qg fix python  # applies the safe fixes; fix the remaining findings by hand'
         [lint python complexipy] => 'Reduce the cognitive complexity of the reported functions (limit 15), then run `qg lint python`'
         [typecheck python basedpyright] => 'Fix the reported type errors, then run `qg typecheck python`'
-        [lint python strlint] => 'Fix the reported structural findings, then run `qg strlint python`'
+        [lint python strlint] => 'Follow the guidance for each structural rule, then run `qg strlint python`'
         [format go gofumpt] => 'qg fix go'
         [format go goimports] => 'qg fix go'
         [lint go golangci] => 'Fix the reported findings, then run `qg lint go`'
-        [lint go strlint] => 'Fix the reported structural findings, then run `qg strlint go`'
-        [lint go vet] => 'go vet ./...'
-        [typecheck go build] => 'go build ./...'
+        [lint go strlint] => 'Follow the guidance for each structural rule, then run `qg strlint go`'
+        [lint go vet] => 'Address the vet diagnostics, then rerun `go vet ./...`'
+        [typecheck go build] => 'Fix the compiler diagnostics, then rerun `go build ./...`'
         [format typescript oxfmt] => 'qg fix typescript'
         [lint typescript oxlint] => 'Fix the reported findings, then run `qg lint typescript`'
-        [lint typescript strlint] => 'Fix the reported structural findings, then run `qg strlint typescript`'
+        [lint typescript strlint] => 'Follow the guidance for each structural rule, then run `qg strlint typescript`'
         [typecheck typescript tsc] => 'Fix the reported type errors, then run `qg typecheck typescript`'
         [test python pytest] => 'uv run pytest'
         [test go test] => 'go test ./...'
@@ -1697,6 +1723,74 @@ def print-console-summary [title: string, scope: string, results: list<record>, 
     print ''
 }
 
+# The full diagnostic remains in the JUnit artifact and job log. Without a
+# JUnit destination, do not truncate: a local user must not lose diagnostics.
+def summary-diagnostic [message: string]: nothing -> string {
+    let junit = $env.QUALITY_GATE_JUNIT_FILE? | default ''
+    mut limit = 32768
+    if ($junit | is-empty) or (($message | str length) <= $limit) { return $message }
+    let file = $junit | path basename
+    let bytes = $message | into binary
+    mut prefix = $bytes | bytes at 0..<$limit
+    # Nushell's string slicing is byte-based and can replace a partial UTF-8
+    # character. Back off to a boundary without altering legitimate U+FFFDs.
+    while (($prefix | decode utf-8 | into binary) != $prefix) {
+        $limit = $limit - 1
+        $prefix = $bytes | bytes at 0..<$limit
+    }
+    $"($prefix | decode utf-8)\n\n[Diagnostic truncated in this summary; see the full JUnit artifact ($file) or the job log.]"
+}
+
+def markdown-text-block [text: string]: nothing -> string {
+    let runs = $text | parse --regex '(?<ticks>`{3,})' | get ticks
+    let width = if ($runs | is-empty) { 3 } else { 1 + ($runs | each {|run| $run | str length } | math max) }
+    let fence = '`' | fill --width $width --character '`'
+    [$'($fence)text' $text $fence] | str join (char nl)
+}
+
+# The tools do not share a structured diagnostic format. Count only recognized
+# headers in failed lint checks; this is a convenience, never a verdict.
+def lint-diagnostic-counts [scope: path, results: list<record>]: nothing -> list<string> {
+    let entries = $results
+    | where status == failure and category == finding
+    | each {|result|
+        let project = result-project $result $scope
+        let matches = match $result.check {
+            'lint:typescript:oxlint' => {
+                $result.error | parse --regex '(?m)^[ \t]*(?<severity>×|⚠)[ \t]+(?<rule>[A-Za-z0-9_-]+\([A-Za-z0-9_./-]+\)):'
+                | each {|entry| {rule: $entry.rule, severity: (if $entry.severity == '×' { 'error' } else { 'warning' })} }
+            }
+            'lint:python:ruff' => {
+                $result.error | parse --regex '(?m)^(?<rule>[A-Z][A-Z0-9]{1,12}[0-9])(?:[ \t]+\[\*\])?[ \t]'
+                | each {|entry| {rule: $entry.rule, severity: 'unspecified'} }
+            }
+            'lint:go:golangci' => {
+                $result.error | parse --regex '(?m)^[^\s:]+\.go:[0-9]+:[0-9]+:[^\n]*\((?<rule>[A-Za-z][A-Za-z0-9_-]+)\)[ \t]*$'
+                | each {|entry| {rule: $entry.rule, severity: 'unspecified'} }
+            }
+            _ => []
+        }
+        $matches | each {|entry| $entry | insert project $project | insert check $result.check }
+    } | flatten
+    if ($entries | is-empty) { return [] }
+    let grouped = $entries | group-by project check rule severity --to-table
+        | each {|group| $group | insert count ($group.items | length) | reject items }
+        | sort-by --reverse count
+    let shown = $grouped | first 20
+        | each {|entry| $'| `($entry.project)` | `($entry.check)` | `($entry.rule)` | ($entry.severity) | ($entry.count) |' }
+    [
+        '## Diagnostic counts'
+        ''
+        'Parsed from recognized diagnostic headers in failed lint checks; counts may be incomplete. The full diagnostics remain authoritative.'
+        ''
+        '| Project | Check | Rule | Severity | Count |'
+        '| --- | --- | --- | --- | ---: |'
+        ($shown | str join (char nl))
+        (if ($grouped | length) > 20 { "\nOnly the 20 most frequent groups are shown." } else { '' })
+        ''
+    ]
+}
+
 def write-summary [title: string, scope: string, results: list<record>, cgo_notice: string = ''] {
     let summary_file = ($env.QUALITY_GATE_SUMMARY_FILE? | default null)
     if $summary_file == null { return }
@@ -1712,24 +1806,26 @@ def write-summary [title: string, scope: string, results: list<record>, cgo_noti
     } else {
         $failures | each {|failure|
             let display_project = result-project $failure $scope
+            let diagnostic = markdown-text-block (summary-diagnostic $failure.error)
+            let fix = markdown-text-block $failure.fix
             $'### `($display_project)` / ($failure.language) / `($failure.check)`
 
 Category: `($failure.category)`
 Failure:
 
-```text
-($failure.error)
-```
+($diagnostic)
 
 How to fix it:
 
-```text
-($failure.fix)
-```'
+($fix)'
         }
     }
     let revision = $env.QUALITY_GATE_REVISION? | default 'unknown'
     let mode = if (report-only) { 'report-only' } else { 'blocking' }
+    let qg_note = if ($failures | any {|entry| $entry.fix | str contains 'qg ' }) {
+        let ref = if $revision =~ '^[a-fA-F0-9]{40}$' { $revision } else { '<release-tag>' }
+        $'> `qg` is available with the Quality Gate devenv profile. Without it, run the same arguments with `nix run github:prefeitura-rio/flakes/($ref)#quality-gate -- <arguments>`.'
+    } else { '' }
     let content = [
         $'# Quality Gate — ($title)'
         ''
@@ -1744,12 +1840,17 @@ How to fix it:
         '| --- | --- | --- | --- | --- |'
         ($rows | str join (char nl))
         ''
+        (lint-diagnostic-counts $scope $results | str join (char nl))
         '## Failure details'
         ''
         ($details | str join (char nl + char nl))
         ''
+        $qg_note
+        ''
     ] | str join (char nl)
-    $content | save --force $summary_file
+    # Sanitize at the final boundary as well as at capture, including metadata
+    # and unexpected error messages. Keep UTF-8 diagnostic characters intact.
+    (strip-terminal-codes $content) | save --force $summary_file
 }
 
 def write-junit [title: string, scope: string, results: list<record>, cgo_notice: string = ''] {
