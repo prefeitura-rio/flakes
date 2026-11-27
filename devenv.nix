@@ -27,6 +27,7 @@ in
     shipped.uv
     pkgs.nu-lint
     pkgs.nixfmt
+    pkgs.python3
   ];
 
   tasks = {

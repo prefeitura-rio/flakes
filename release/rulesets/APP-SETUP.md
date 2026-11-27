@@ -73,6 +73,11 @@ that Environment:
 | `quality-gate-release` | `QUALITY_GATE_RELEASE_APP_ID`, `QUALITY_GATE_RELEASE_APP_PRIVATE_KEY`, `GITLAB_CANARY_TOKEN` | release (through the `environment` input of the reusable release workflow), automated promotion, canary analysis |
 | `quality-gate-promotion` | `QUALITY_GATE_RELEASE_APP_ID`, `QUALITY_GATE_RELEASE_APP_PRIVATE_KEY` | emergency rollback (two reviewers) |
 | `cachix-publish` | `CACHIX_AUTH_TOKEN` | the two cache publication jobs |
+| `quality-gate-kodus-review` | `KODUS_TEAM_KEY`, `KODUS_TAILSCALE_CLIENT_ID`, `KODUS_TAILSCALE_CLIENT_SECRET` | optional advisory self-test review |
+
+The optional Kodus Environment is configured with `--include-kodus`. See the
+[self-test review runbook](../../docs/runbooks/kodus-self-test-review.md)
+before creating its secrets or enabling the workflow.
 
 The reusable release workflow in `prefeitura-rio/actions` accepts an optional
 `environment` input; `quality-gate-release.yml` passes `quality-gate-release`

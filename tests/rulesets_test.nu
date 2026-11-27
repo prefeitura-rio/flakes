@@ -14,6 +14,7 @@ const ENVIRONMENT_SECRETS = {
     quality-gate-release: [QUALITY_GATE_RELEASE_APP_ID QUALITY_GATE_RELEASE_APP_PRIVATE_KEY GITLAB_CANARY_TOKEN]
     quality-gate-promotion: [QUALITY_GATE_RELEASE_APP_ID QUALITY_GATE_RELEASE_APP_PRIVATE_KEY]
     cachix-publish: [CACHIX_AUTH_TOKEN]
+    quality-gate-kodus-review: [KODUS_TEAM_KEY KODUS_TAILSCALE_CLIENT_ID KODUS_TAILSCALE_CLIENT_SECRET]
 }
 
 def new-world []: nothing -> record {
@@ -158,6 +159,46 @@ def test_applying_twice_changes_nothing_the_second_time [] {
     } catch {|error|
         $error.msg
     }
+    finish $world $outcome
+}
+
+@test
+def test_optional_kodus_environment_is_guarded_when_enabled [] {
+    let world = new-world
+    let outcome = try {
+        secrets-in-environments $world
+        let applied = apply-script $world --include-kodus --apply
+        assert equal $applied.exit_code 0 $'($applied.stdout)\n($applied.stderr)'
+        let state = open $world.state
+        assert equal $state.environments.quality-gate-kodus-review.can_admins_bypass false
+        assert equal ($state.policies | get quality-gate-kodus-review | get name) [master]
+        assert equal (apply-script $world --include-kodus --verify | get exit_code) 0
+        edit-state $world {|state|
+            $state | update policies ($state.policies | update cachix-publish ($state.policies | get cachix-publish | append {id: 98, name: '*', type: branch}))
+        }
+        assert equal (apply-script $world --include-kodus --verify | get exit_code) 0 'extra-policy checking is limited to the new Kodus Environment'
+        edit-state $world {|state|
+            $state | update policies ($state.policies | update quality-gate-kodus-review ($state.policies | get quality-gate-kodus-review | append {id: 99, name: '*', type: branch}))
+        }
+        let broad = apply-script $world --include-kodus --verify
+        assert equal $broad.exit_code 1
+        assert ($broad.stdout | str contains 'unexpected deployment branch or tag policy')
+        edit-state $world {|state|
+            $state | update policies ($state.policies | update quality-gate-kodus-review ($state.policies | get quality-gate-kodus-review | where name == master))
+        }
+        edit-state $world {|state|
+            $state | update environment_secrets ($state.environment_secrets | update cachix-publish [CACHIX_AUTH_TOKEN KODUS_TEAM_KEY])
+        }
+        let misplaced = apply-script $world --include-kodus --verify
+        assert equal $misplaced.exit_code 1
+        assert ($misplaced.stdout | str contains 'secret KODUS_TEAM_KEY is stored in environment cachix-publish')
+        secrets-in-environments $world
+        edit-state $world {|state| $state | update repository_secrets [KODUS_TEAM_KEY] }
+        let unprotected = apply-script $world --verify
+        assert equal $unprotected.exit_code 1
+        assert ($unprotected.stdout | str contains 'secret KODUS_TEAM_KEY is stored at repository level')
+        null
+    } catch {|error| $error.msg }
     finish $world $outcome
 }
 

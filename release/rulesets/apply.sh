@@ -19,6 +19,7 @@ set -euo pipefail
 repository="prefeitura-rio/flakes"
 mode="dry-run"
 app_id=""
+include_kodus=false
 skipped_rulesets=()
 rulesets_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -32,19 +33,21 @@ secrets_of() {
     quality-gate-release) echo "QUALITY_GATE_RELEASE_APP_ID QUALITY_GATE_RELEASE_APP_PRIVATE_KEY GITLAB_CANARY_TOKEN" ;;
     quality-gate-promotion) echo "QUALITY_GATE_RELEASE_APP_ID QUALITY_GATE_RELEASE_APP_PRIVATE_KEY" ;;
     cachix-publish) echo "CACHIX_AUTH_TOKEN" ;;
+    quality-gate-kodus-review) echo "KODUS_TEAM_KEY KODUS_TAILSCALE_CLIENT_ID KODUS_TAILSCALE_CLIENT_SECRET" ;;
   esac
 }
-environment_names="quality-gate-release quality-gate-promotion cachix-publish"
-protected_secrets="QUALITY_GATE_RELEASE_APP_ID QUALITY_GATE_RELEASE_APP_PRIVATE_KEY GITLAB_CANARY_TOKEN CACHIX_AUTH_TOKEN"
+environment_names="quality-gate-release quality-gate-promotion cachix-publish quality-gate-kodus-review"
+protected_secrets="QUALITY_GATE_RELEASE_APP_ID QUALITY_GATE_RELEASE_APP_PRIVATE_KEY GITLAB_CANARY_TOKEN CACHIX_AUTH_TOKEN KODUS_TEAM_KEY KODUS_TAILSCALE_CLIENT_ID KODUS_TAILSCALE_CLIENT_SECRET"
 
 usage() {
   cat >&2 <<'EOF'
-Usage: apply.sh --app-id ID [--repository OWNER/REPO] [--skip-ruleset NAME]... [--apply | --verify]
+Usage: apply.sh --app-id ID [--repository OWNER/REPO] [--skip-ruleset NAME]... [--include-kodus] [--apply | --verify]
 
   --app-id ID        numeric ID of the release GitHub App (the "App ID" shown in
                      the App settings, not the installation ID)
   --repository R     repository to configure (default: prefeitura-rio/flakes)
   --skip-ruleset N   do not create, change or verify the ruleset called N (repeatable)
+  --include-kodus    configure and verify the optional Kodus review Environment
   --apply            change what differs (default is a dry run)
   --verify           read only; exit 1 if the repository differs from the policy
 EOF
@@ -55,6 +58,7 @@ while [[ $# -gt 0 ]]; do
     --app-id) app_id="$2"; shift 2 ;;
     --repository) repository="$2"; shift 2 ;;
     --skip-ruleset) skipped_rulesets+=("$2"); shift 2 ;;
+    --include-kodus) include_kodus=true; shift ;;
     --apply) mode="apply"; shift ;;
     --verify) mode="verify"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -169,6 +173,10 @@ environment() {
       send POST "environments/$name/deployment-branch-policies" '{"name":"master","type":"branch"}'
     fi
   fi
+  if [[ "$name" == quality-gate-kodus-review && -n "${policies:-}" ]] && jq -e '.branch_policies[]? | select(.name != "master" or .type != "branch")' <<<"$policies" >/dev/null; then
+    problem "environment $name: unexpected deployment branch or tag policy; remove it explicitly after review"
+    echo "PENDING  environment $name has an additional deployment policy"
+  fi
 }
 
 # --- workflow permissions ---------------------------------------------------
@@ -255,12 +263,23 @@ secrets() {
   done
   local name present
   for name in $environment_names; do
+    if [[ "$name" == quality-gate-kodus-review && "$include_kodus" != true ]]; then
+      continue
+    fi
     if ! listing="$(fetch_listing "environments/$name/secrets")"; then
       problem "cannot read the secrets of environment $name"
       echo "UNKNOWN  secrets of environment $name could not be read"
       continue
     fi
     present="$(jq -r '.secrets[]?.name' <<<"$listing")"
+    if [[ "$name" != quality-gate-kodus-review ]]; then
+      for secret in KODUS_TEAM_KEY KODUS_TAILSCALE_CLIENT_ID KODUS_TAILSCALE_CLIENT_SECRET; do
+        if grep -qx "$secret" <<<"$present"; then
+          problem "secret $secret is stored in environment $name; keep it only in quality-gate-kodus-review"
+          echo "PENDING  secret $secret is present in unexpected environment $name"
+        fi
+      done
+    fi
     for secret in $(secrets_of "$name"); do
       if ! grep -qx "$secret" <<<"$present"; then
         problem "secret $secret is missing from environment $name"
@@ -273,6 +292,9 @@ secrets() {
 environment quality-gate-release '[]'
 environment quality-gate-promotion "$(reviewers_json)"
 environment cachix-publish '[]'
+if [[ "$include_kodus" == true ]]; then
+  environment quality-gate-kodus-review '[]'
+fi
 workflow_permissions
 
 # Only the first tag ruleset names the App. Version tags also fall under it, so

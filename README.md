@@ -449,6 +449,10 @@ Two environment variables help while developing:
   fails the run when fewer test cases ran than were discovered. The workflow
   sets it and uploads the report.
 
+An optional advisory Kodus review of self-test changes can run separately after
+the PR workflow. It is disabled by default; activation and its security limits
+are documented in [the runbook](docs/runbooks/kodus-self-test-review.md).
+
 New files are visible to the flake apps only once Git knows them
 (`git add -N <file>` is enough): a rule or a fixture that Git ignores is silently
 missing from the apps the tests run. Before pushing, run the suite in a clean

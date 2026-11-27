@@ -1,0 +1,94 @@
+name: Quality Gate Kodus review
+
+on:
+  workflow_run:
+    workflows: [Quality Gate Tests]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  select:
+    name: Select self-test changes
+    if: github.event.workflow_run.event == 'pull_request' && vars.KODUS_SELF_TEST_REVIEW_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      review: ${{ steps.select.outputs.review }}
+      number: ${{ steps.select.outputs.number }}
+      head: ${{ steps.select.outputs.head }}
+      base: ${{ steps.select.outputs.base }}
+    steps:
+      - name: Checkout trusted default-branch code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Select current PR
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 release/kodus/select-pr.py
+
+  review:
+    name: Kodus / self-test review
+    needs: [select]
+    if: needs.select.outputs.review == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: quality-gate-kodus-review
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: write
+    env:
+      QG_REVIEW_PR: ${{ needs.select.outputs.number }}
+      QG_REVIEW_HEAD: ${{ needs.select.outputs.head }}
+      QG_REVIEW_BASE: ${{ needs.select.outputs.base }}
+      GIT_CONFIG_NOSYSTEM: '1'
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_TERMINAL_PROMPT: '0'
+    steps:
+      - name: Checkout trusted default-branch code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '26.13.1'
+          package-manager-cache: false
+      - name: Install Kodus CLI without lifecycle scripts
+        run: |
+          test "$(npm --version)" = '12.2.2'
+          mkdir -p "$RUNNER_TEMP/kodus-cli"
+          npm install --package-lock-only --save-exact --prefix "$RUNNER_TEMP/kodus-cli" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/ @kodus/cli@0.4.22
+          printf '%s  %s\n' '1dcbe0f71cd713ed088f04f942d162c68d49195de525e02dea8c3b1fee55ab63' "$RUNNER_TEMP/kodus-cli/package-lock.json" | sha256sum --check -
+          npm ci --prefix "$RUNNER_TEMP/kodus-cli" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/
+          python3 release/kodus/disable-trial-fallback.py "$RUNNER_TEMP/kodus-cli"
+      - name: Prepare PR objects without checkout
+        run: python3 release/kodus/prepare-review.py
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4
+        with:
+          oauth-client-id: ${{ secrets.KODUS_TAILSCALE_CLIENT_ID }}
+          oauth-secret: ${{ secrets.KODUS_TAILSCALE_CLIENT_SECRET }}
+          tags: tag:kodus-github-ci
+          version: '1.104.4'
+          sha256sum: 624ea093d47d62cf56f17b8332d74b8decda4a1faa610ebc60a1de334b2b3dc9
+          use-cache: 'false'
+      - name: Review self-test changes
+        id: review
+        env:
+          KODUS_API_URL: ${{ vars.KODUS_SELF_TEST_API_URL }}
+          KODUS_TEAM_KEY: ${{ secrets.KODUS_TEAM_KEY }}
+        run: python3 release/kodus/run-review.py
+      - name: Publish advisory check for the current head
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QG_REVIEW_STATUS: ${{ steps.review.outcome }}
+        run: python3 release/kodus/publish-review.py
