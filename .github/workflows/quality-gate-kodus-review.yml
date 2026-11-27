@@ -1,0 +1,123 @@
+name: Quality Gate Kodus review
+
+on:
+  workflow_run:
+    workflows: [Quality Gate Tests]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  select:
+    name: Select self-test changes
+    if: github.event.workflow_run.event == 'pull_request' && vars.KODUS_SELF_TEST_REVIEW_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      review: ${{ steps.select.outputs.review }}
+      number: ${{ steps.select.outputs.number }}
+      head: ${{ steps.select.outputs.head }}
+      base: ${{ steps.select.outputs.base }}
+    steps:
+      - name: Select current PR
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'prefeitura-rio/flakes'
+          skip() { echo 'review=false' >> "$GITHUB_OUTPUT"; echo "$1"; exit 0; }
+          if ! jq -e --arg repo "$GITHUB_REPOSITORY" '
+            .workflow_run | .event == "pull_request" and
+            .path == ".github/workflows/quality-gate-tests.yml" and
+            .head_repository.full_name == $repo and
+            (.pull_requests | type == "array" and length == 1)
+          ' "$GITHUB_EVENT_PATH" >/dev/null; then
+            skip 'Workflow run has no unique eligible same-repository PR.'
+          fi
+          number="$(jq -r '.workflow_run.pull_requests[0].number' "$GITHUB_EVENT_PATH")"
+          head="$(jq -r '.workflow_run.head_sha' "$GITHUB_EVENT_PATH")"
+          [[ "$number" =~ ^[1-9][0-9]*$ && "$head" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid PR identity.' >&2; exit 1; }
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$number")"
+          if ! jq -e --arg repo "$GITHUB_REPOSITORY" --arg head "$head" --argjson number "$number" '
+            .number == $number and .state == "open" and .base.ref == "master" and
+            .base.repo.full_name == $repo and .head.repo.full_name == $repo and .head.sha == $head
+          ' <<< "$pr" >/dev/null; then
+            skip 'PR was closed, updated, or is outside the trusted repository.'
+          fi
+          base="$(jq -r '.base.sha // ""' <<< "$pr")"
+          [[ "$base" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid base revision.' >&2; exit 1; }
+          expected="$(jq -er '.changed_files | numbers | select(. >= 0 and . <= 3000 and floor == .)' <<< "$pr")"
+          pages="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls/$number/files?per_page=100")"
+          jq -e 'type == "array" and all(.[]; type == "array")' <<< "$pages" >/dev/null
+          actual="$(jq '[.[][]] | length' <<< "$pages")"
+          [[ "$actual" -eq "$expected" ]] || { echo 'Incomplete PR file listing.' >&2; exit 1; }
+          if ! jq -e 'any(.[][]; ((.filename // "") | startswith("tests/")) or ((.previous_filename // "") | startswith("tests/")))' <<< "$pages" >/dev/null; then
+            skip 'No self-test files changed.'
+          fi
+          printf 'review=true\nnumber=%s\nhead=%s\nbase=%s\n' "$number" "$head" "$base" >> "$GITHUB_OUTPUT"
+
+  review:
+    name: Kodus / self-test review
+    needs: [select]
+    if: needs.select.outputs.review == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: quality-gate-kodus-review
+    concurrency:
+      group: kodus-review-${{ needs.select.outputs.number }}-${{ needs.select.outputs.head }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      QG_REVIEW_PR: ${{ needs.select.outputs.number }}
+      QG_REVIEW_HEAD: ${{ needs.select.outputs.head }}
+      QG_REVIEW_BASE: ${{ needs.select.outputs.base }}
+      GIT_CONFIG_NOSYSTEM: '1'
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_TERMINAL_PROMPT: '0'
+    steps:
+      - name: Checkout trusted default-branch code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '26.13.1'
+          package-manager-cache: false
+      - name: Install Kodus CLI without lifecycle scripts
+        run: |
+          test "$(npm --version)" = '12.2.2'
+          mkdir -p "$RUNNER_TEMP/kodus-cli"
+          npm install --package-lock-only --save-exact --prefix "$RUNNER_TEMP/kodus-cli" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/ @kodus/cli@0.4.22
+          printf '%s  %s\n' '1dcbe0f71cd713ed088f04f942d162c68d49195de525e02dea8c3b1fee55ab63' "$RUNNER_TEMP/kodus-cli/package-lock.json" | sha256sum --check -
+          npm ci --prefix "$RUNNER_TEMP/kodus-cli" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/
+      - name: Prepare PR objects without checkout
+        run: python3 release/kodus/prepare-review.py
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4
+        with:
+          oauth-client-id: ${{ secrets.KODUS_TAILSCALE_CLIENT_ID }}
+          oauth-secret: ${{ secrets.KODUS_TAILSCALE_CLIENT_SECRET }}
+          tags: tag:kodus-github-ci
+          version: '1.104.4'
+          sha256sum: 624ea093d47d62cf56f17b8332d74b8decda4a1faa610ebc60a1de334b2b3dc9
+          use-cache: 'false'
+      - name: Review self-test changes
+        id: review
+        env:
+          KODUS_API_URL: ${{ vars.KODUS_SELF_TEST_API_URL }}
+          KODUS_TEAM_KEY: ${{ secrets.KODUS_TEAM_KEY }}
+        run: python3 release/kodus/run-review.py
+      - name: Comment on the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 release/kodus/run-review.py --comment
+      - name: Report an unavailable review
+        if: failure()
+        run: echo 'Kodus self-test review did not complete; see the job log.' >> "$GITHUB_STEP_SUMMARY"
